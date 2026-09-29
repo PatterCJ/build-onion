@@ -157,6 +157,17 @@ func TestPipelineRecords(t *testing.T) {
 		t.Fatalf("pipeline = %+v", pl)
 	}
 
+	// A second line may record build-onion again, but only at the same commit.
+	must(WriteBuildOnionRecord(filepath.Join(dir, "onion-verify.json"), BuildOnionRef{Repository: "PatterCJ/build-onion", Commit: "c1"}))
+	if _, err := ReadPipeline(dir, "x"); err != nil {
+		t.Errorf("same-commit records rejected: %v", err)
+	}
+	must(WriteBuildOnionRecord(filepath.Join(dir, "onion-verify.json"), BuildOnionRef{Repository: "PatterCJ/build-onion", Commit: "c2"}))
+	if _, err := ReadPipeline(dir, "x"); err == nil {
+		t.Error("lines at different build-onion commits accepted")
+	}
+	os.Remove(filepath.Join(dir, "onion-verify.json"))
+
 	// Without a build-onion record the builder is unnamed: refuse.
 	os.Remove(filepath.Join(dir, "onion.json"))
 	if _, err := ReadPipeline(dir, "x"); err == nil {
@@ -166,5 +177,58 @@ func TestPipelineRecords(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "bad.json"), []byte(`{"kind":"job","extra":1}`), 0o644)
 	if _, err := ReadPipeline(dir, "x"); err == nil {
 		t.Error("record with unknown field accepted")
+	}
+}
+
+func TestScanRecordValidation(t *testing.T) {
+	ok := Scan{Name: "sca", Tool: "blackduck", Stage: StagePostBuild,
+		StartedAt: "2026-09-29T20:05:00Z", FinishedAt: "2026-09-29T20:31:00Z",
+		Subject: ScanSubject{Kind: "artifact", Digest: digest.Bytes([]byte("x"))}}
+	if err := ok.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]func(*Scan){
+		"bad stage":             func(s *Scan) { s.Stage = "whenever" },
+		"finished before start": func(s *Scan) { s.FinishedAt = "2026-09-29T20:00:00Z" },
+		"not a time":            func(s *Scan) { s.StartedAt = "yesterday" },
+		"pre-build artifact":    func(s *Scan) { s.Stage = StagePreBuild },
+		"bad subject kind":      func(s *Scan) { s.Subject.Kind = "repo" },
+		"bad subject digest":    func(s *Scan) { s.Subject.Digest = "abc" },
+		"bad report digest":     func(s *Scan) { s.Report = &Report{Digest: "md5:1"} },
+		"missing tool":          func(s *Scan) { s.Tool = "" },
+	}
+	for name, mutate := range cases {
+		s := ok
+		mutate(&s)
+		if s.Validate() == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestScansMustBeAboutThisBuild(t *testing.T) {
+	src, snap := gitSource(t)
+	files := t.TempDir()
+	os.WriteFile(filepath.Join(files, "widget"), []byte("binary"), 0o755)
+	scan := func(kind, d string) Scan {
+		return Scan{Name: "s", Tool: "t", Stage: StagePostBuild, StartedAt: "2026-09-29T20:00:00Z", FinishedAt: "2026-09-29T20:01:00Z",
+			Subject: ScanSubject{Kind: kind, Digest: d}}
+	}
+	for _, tc := range []struct {
+		name string
+		s    Scan
+		ok   bool
+	}{
+		{"source snapshot", scan("source", snap.Digest), true},
+		{"built artifact", scan("artifact", digest.Bytes([]byte("binary"))), true},
+		{"another commit's source", scan("source", digest.Bytes([]byte("old"))), false},
+		{"another build's artifact", scan("artifact", digest.Bytes([]byte("other"))), false},
+	} {
+		p := params(src, snap, files)
+		p.Pipeline.Scans = []Scan{tc.s}
+		_, _, err := Generate(p)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v", tc.name, err)
+		}
 	}
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,9 +12,9 @@ import (
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/inventory"
-	"github.com/PatterCJ/build-onion/internal/plugin"
 	"github.com/PatterCJ/build-onion/internal/policy"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
 // onion source snapshot|verify
@@ -101,15 +100,13 @@ func cmdGate(args []string) error {
 	fs.StringVar(&p.Repository, "repository", "", "source repository URL")
 	fs.StringVar(&p.Base, "base", "", "previous build point to diff against")
 	fs.BoolVar(&p.Fork, "fork", false, "the commit comes from a fork")
-	fs.StringVar(&p.Context.Platform, "platform", "local", "CI platform name, passed to plugins")
+	fs.StringVar(&p.Context.Platform, "platform", "local", "CI platform name")
 	fs.StringVar(&p.Context.Event, "event", "", "triggering event (required)")
 	fs.StringVar(&p.Context.Ref, "ref", "", "triggering ref (required)")
 	fs.StringVar(&p.Context.Actor, "actor", "", "who triggered the run")
 	fs.StringVar(&p.Context.RunURL, "run-url", "", "URL of this run")
 	out := fs.String("out", "", "write the verdict JSON here")
-	results := fs.String("results-dir", "", "keep each plugin's raw response here")
 	ghOut := fs.String("github-output", "", "append releasable=true|false here")
-	allowCmd := fs.Bool("allow-command-plugins", false, "allow unpinned command plugins (local development only)")
 	fs.Parse(args)
 	if p.Context.Event == "" || p.Context.Ref == "" || *snapPath == "" {
 		return errors.New("--event, --ref and --snapshot are required")
@@ -122,13 +119,13 @@ func cmdGate(args []string) error {
 	if err != nil {
 		return err
 	}
-	snap, err := loadSnapshot(*snapPath, "")
-	if err != nil {
+	// The snapshot isn't evaluated by the gate, but the gate only runs
+	// against a checkout that still matches it.
+	if err := verifySource(s.source, *snapPath, "", nil); err != nil {
 		return err
 	}
 	p.SourceDir, p.ManifestPath, p.PolicyPath = s.source, s.manifest, *policyPath
-	runner := plugin.Runner{AllowCommand: *allowCmd, ResultsDir: *results, Env: secretLookup()}
-	v, err := gate.Evaluate(context.Background(), p, pol, m, snap, runner)
+	v, err := gate.Evaluate(p, pol, m)
 	if err != nil {
 		return err
 	}
@@ -156,25 +153,6 @@ func cmdGate(args []string) error {
 	return nil
 }
 
-// secretLookup resolves plugin secrets from ONION_SECRETS (a JSON object, as
-// produced by GitHub's toJSON(secrets)) and then the process environment.
-// Only names a plugin declares are ever read.
-func secretLookup() func(string) (string, bool) {
-	var fromJSON map[string]string
-	if raw := os.Getenv("ONION_SECRETS"); raw != "" {
-		_ = json.Unmarshal([]byte(raw), &fromJSON)
-	}
-	return func(k string) (string, bool) {
-		if v, ok := fromJSON[k]; ok {
-			return v, true
-		}
-		if k == "ONION_SECRETS" {
-			return "", false
-		}
-		return os.LookupEnv(k)
-	}
-}
-
 func printGate(v *gate.Verdict) {
 	w := os.Stderr
 	fmt.Fprintf(w, "gate: releasable=%t (%s)\n", v.Releasable, v.Reason)
@@ -186,15 +164,12 @@ func printGate(v *gate.Verdict) {
 	for _, f := range v.SensitiveChange {
 		fmt.Fprintf(w, "gate: build-sensitive change: %s\n", f)
 	}
-	for _, r := range v.Plugins {
-		fmt.Fprintf(w, "gate: plugin %s (%s): %s — %s\n", r.Name, r.Mode, r.Verdict, r.Summary)
-	}
 }
 
 // onion record job|workflow|build-onion
 func cmdRecord(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: onion record job|workflow|build-onion [flags]")
+		return errors.New("usage: onion record job|workflow|build-onion|scan [flags]")
 	}
 	fs := flag.NewFlagSet("record "+args[0], flag.ExitOnError)
 	out := fs.String("out", "", "record file to write (required)")
@@ -243,6 +218,30 @@ func cmdRecord(args []string) error {
 			return errors.New("--out and --commit are required")
 		}
 		return inventory.WriteBuildOnionRecord(*out, b)
+	case "scan":
+		var sc inventory.Scan
+		fs.StringVar(&sc.Name, "name", "", "the pipeline's name for this check, e.g. sca")
+		fs.StringVar(&sc.Tool, "tool", "", "tool that ran")
+		fs.StringVar(&sc.Version, "version", "", "tool version")
+		fs.StringVar(&sc.Stage, "stage", "", "pre-build | post-build")
+		fs.StringVar(&sc.StartedAt, "started", "", "RFC 3339 start time")
+		fs.StringVar(&sc.FinishedAt, "finished", "", "RFC 3339 finish time")
+		fs.StringVar(&sc.Subject.Kind, "subject-kind", "", "source | artifact")
+		fs.StringVar(&sc.Subject.Digest, "subject", "", "snapshot digest or artifact digest the tool examined")
+		report := fs.String("report", "", "report file the tool wrote (hashed, never read)")
+		reportURL := fs.String("report-url", "", "where the report is kept")
+		fs.Parse(args[1:])
+		if *out == "" {
+			return errors.New("--out is required")
+		}
+		if *report != "" {
+			d, err := digest.File(*report)
+			if err != nil {
+				return err
+			}
+			sc.Report = &inventory.Report{Digest: d, URL: *reportURL}
+		}
+		return inventory.WriteScanRecord(*out, sc)
 	}
 	return fmt.Errorf("unknown record kind %q", args[0])
 }
@@ -281,4 +280,43 @@ func appendLines(p string, lines ...string) error {
 	defer f.Close()
 	_, err = fmt.Fprintln(f, strings.Join(lines, "\n"))
 	return err
+}
+
+// onion compare: the security line's rebuild must match the build line.
+func cmdCompare(args []string) error {
+	fs := flag.NewFlagSet("compare", flag.ExitOnError)
+	var s sourceFlags
+	s.register(fs)
+	staged := fs.String("staged", "", "build line outputs directory (files/, image.tar)")
+	rebuilt := fs.String("rebuilt", "", "security line outputs directory, same layout")
+	runner := fs.String("runner", "", "where the rebuild ran")
+	out := fs.String("out", "", "write the comparison JSON here")
+	fs.Parse(args)
+	if *staged == "" || *rebuilt == "" {
+		return errors.New("--staged and --rebuilt are required")
+	}
+	m, err := s.load()
+	if err != nil {
+		return err
+	}
+	r, err := verify.Compare(m, *staged, *rebuilt, *runner)
+	if err != nil {
+		return err
+	}
+	if *out != "" {
+		if err := writeJSON(*out, r); err != nil {
+			return err
+		}
+	}
+	for _, o := range r.Outputs {
+		mark := "match"
+		if !o.Match {
+			mark = "MISMATCH"
+		}
+		fmt.Fprintf(os.Stderr, "compare: %-8s %s %s  build line %s  rebuild %s\n", mark, o.Kind, o.Name, o.Staged, o.Rebuilt)
+	}
+	if !r.Matched {
+		return errors.New("independent rebuild differs from the build line: the build environment changed the output")
+	}
+	return nil
 }

@@ -1,7 +1,6 @@
 package gate
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,16 +8,13 @@ import (
 	"testing"
 
 	"github.com/PatterCJ/build-onion/internal/manifest"
-	"github.com/PatterCJ/build-onion/internal/plugin"
 	"github.com/PatterCJ/build-onion/internal/policy"
-	"github.com/PatterCJ/build-onion/internal/source"
 )
 
 type fixture struct {
-	dir        string
-	base, head string
-	m          *manifest.Manifest
-	snap       *source.Snapshot
+	dir  string
+	base string
+	m    *manifest.Manifest
 }
 
 func setup(t *testing.T) *fixture {
@@ -50,20 +46,16 @@ func setup(t *testing.T) *fixture {
 	write(".github/workflows/ci.yml", "on: push\n")
 	gitc("add", ".")
 	gitc("commit", "-qm", "head")
-	snap, err := source.Take(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
 	m := &manifest.Manifest{Dependencies: manifest.Dependencies{Lockfiles: []string{"go.sum"}}}
-	return &fixture{dir: dir, base: base, head: snap.Commit, m: m, snap: snap}
+	return &fixture{dir: dir, base: base, m: m}
 }
 
 func (f *fixture) eval(t *testing.T, event, ref, base string, pol *policy.Policy) *Verdict {
 	t.Helper()
-	v, err := Evaluate(context.Background(), Params{
+	v, err := Evaluate(Params{
 		SourceDir: f.dir, ManifestPath: "build-onion.yml", Base: base,
-		Context: plugin.Context{Platform: "test", Event: event, Ref: ref},
-	}, pol, f.m, f.snap, plugin.Runner{AllowCommand: true})
+		Context: Context{Platform: "test", Event: event, Ref: ref},
+	}, pol, f.m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,39 +106,12 @@ func TestSensitiveChanges(t *testing.T) {
 	}
 }
 
-func TestPluginVerdicts(t *testing.T) {
-	f := setup(t)
-	p := filepath.Join(t.TempDir(), "risk.sh")
-	// Fails whenever the change touches a sensitive path.
-	os.WriteFile(p, []byte(`#!/bin/sh
-if grep -q '"sensitive":\["' ; then v=fail; else v=pass; fi
-echo "{\"apiVersion\":\"build-onion/plugin/v1\",\"verdict\":\"$v\",\"summary\":\"sensitive change\"}"
-`), 0o755)
-	for _, mode := range []string{plugin.Advisory, plugin.Enforce} {
-		pol := policy.Default()
-		pol.Plugins = []plugin.Spec{{Name: "risk", Hook: plugin.HookGate, Mode: mode, Command: []string{p}}}
-		v := f.eval(t, "push", "refs/heads/main", f.base, pol)
-		if len(v.Plugins) != 1 || v.Plugins[0].Verdict != plugin.Fail {
-			t.Fatalf("%s: plugins = %+v", mode, v.Plugins)
-		}
-		if v.Blocked != (mode == plugin.Enforce) {
-			t.Errorf("%s: blocked = %v", mode, v.Blocked)
-		}
-	}
-}
-
 func TestPolicyLoad(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "policy.yml")
 	os.WriteFile(p, []byte(`apiVersion: build-onion/policy/v1
 release:
   refs: [refs/tags/v*]
-plugins:
-  - name: jev
-    hook: gate
-    mode: advisory
-    image: ghcr.io/acme/jev@sha256:`+strings.Repeat("b", 64)+`
-    network: true
-    secrets: [TYPESAFE_API_KEY]
+sensitivePaths: [scripts/**]
 `), 0o644)
 	pol, _, err := policy.Load(p)
 	if err != nil {
@@ -157,6 +122,10 @@ plugins:
 	}
 	if len(pol.Release.Events) == 0 {
 		t.Error("events default not applied")
+	}
+	os.WriteFile(p, []byte("apiVersion: build-onion/policy/v1\nplugins: []\n"), 0o644)
+	if _, _, err := policy.Load(p); err == nil {
+		t.Error("unknown policy key accepted")
 	}
 	os.WriteFile(p, []byte("apiVersion: build-onion/policy/v1\nrelease:\n  events: [pull_request_target]\n"), 0o644)
 	if _, _, err := policy.Load(p); err == nil {

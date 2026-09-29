@@ -19,6 +19,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
 const (
@@ -185,7 +186,9 @@ func Run(in Input) *Report {
 	// gate noticed on the way in.
 	if haveInv {
 		checkGate(r, &inv)
+		checkVerification(r, &inv, in.Digest)
 		checkPipeline(r, &inv)
+		checkScans(r, &inv)
 	}
 
 	// Layer 5: dependencies — everything the SBOM finds in the artifact must be
@@ -264,19 +267,51 @@ func checkGate(r *Report, inv *inventory.Inventory) {
 	if !g.ChangeKnown {
 		r.warn("gate", "change set", "unknown; no previous build point to diff against")
 	}
-	for _, p := range g.Plugins {
-		detail := fmt.Sprintf("%s (%s): %s", p.Verdict, p.Mode, p.Summary)
-		if p.Score != nil {
-			detail = fmt.Sprintf("%s, score %.2f", detail, *p.Score)
+}
+
+// checkVerification reads the security line's record: an independent rebuild
+// matched the build line for this artifact.
+func checkVerification(r *Report, inv *inventory.Inventory, d string) {
+	v := inv.Verification
+	if !r.add("verification", "security line recorded", v != nil && v.Rebuild != nil, "") {
+		return
+	}
+	var m *verify.Match
+	for i := range v.Rebuild.Outputs {
+		if v.Rebuild.Outputs[i].Rebuilt == d {
+			m = &v.Rebuild.Outputs[i]
 		}
-		switch {
-		case p.Blocking:
-			r.add("gate", "plugin "+p.Name, false, "%s", detail)
-		case p.Verdict == "pass":
-			r.add("gate", "plugin "+p.Name, true, "%s", detail)
-		default:
-			r.warn("gate", "plugin "+p.Name, detail)
+	}
+	if m == nil {
+		r.add("verification", "independent rebuild matched", false, "artifact not among the rebuilt outputs")
+	} else {
+		r.add("verification", "independent rebuild matched", m.Match && v.Rebuild.Matched,
+			"%s %s: build line %s, rebuild %s on %s", m.Kind, m.Name, m.Staged, m.Rebuilt, v.Rebuild.Runner)
+	}
+}
+
+// checkScans lists the tools the pipeline ran and binds each to this build.
+// build-onion records that a scan happened; it does not judge findings.
+func checkScans(r *Report, inv *inventory.Inventory) {
+	if len(inv.Pipeline.Scans) == 0 {
+		r.skip("scans", "scans recorded", "the pipeline recorded no scans")
+		return
+	}
+	for _, sc := range inv.Pipeline.Scans {
+		var about string
+		var bound bool
+		switch sc.Subject.Kind {
+		case "source":
+			about, bound = "source snapshot", sc.Subject.Digest == inv.Source.Snapshot
+		case "artifact":
+			out, ok := inv.Subject(sc.Subject.Digest)
+			about, bound = out.Kind+" "+out.Name, ok
 		}
+		detail := fmt.Sprintf("%s %s, %s, %s → %s, against %s %s", sc.Tool, sc.Version, sc.Stage, sc.StartedAt, sc.FinishedAt, about, sc.Subject.Digest)
+		if sc.Report != nil {
+			detail += ", report " + sc.Report.Digest
+		}
+		r.add("scans", sc.Name+" ran against this build", bound, "%s", detail)
 	}
 }
 

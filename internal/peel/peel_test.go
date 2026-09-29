@@ -15,15 +15,15 @@ import (
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/inventory"
-	"github.com/PatterCJ/build-onion/internal/plugin"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
 const (
 	repo         = "acme/widget"
 	repoURL      = "https://github.com/acme/widget"
 	commit       = "1111111111111111111111111111111111111111"
-	signer       = "PatterCJ/build-onion/.github/workflows/onion-build.yml"
+	signer       = "PatterCJ/build-onion/.github/workflows/onion-verify.yml"
 	runURL       = "https://github.com/acme/widget/actions/runs/42/attempts/1"
 	builderImage = "docker.io/library/golang:1.27.1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
@@ -84,6 +84,11 @@ func newWorld() *world {
 				Jobs: []inventory.Job{{Name: "build", Runner: "ubuntu24 20260921.1"}},
 			},
 			Gate: &gate.Verdict{Releasable: true, Reason: "push on refs/heads/main", ChangeKnown: true, ChangedFiles: 2},
+			Verification: &inventory.Verification{
+				Rebuild: &verify.Rebuild{Runner: "ubuntu24 20260921.1", Matched: true, Outputs: []verify.Match{
+					{Kind: "file", Name: "widget", Staged: artifactDigest, Rebuilt: artifactDigest, Match: true},
+				}},
+			},
 		},
 		sbom: map[string]any{"components": []any{
 			map[string]any{"name": "github.com/acme/widget", "purl": "pkg:golang/github.com/acme/widget@v0.0.0-2026"},
@@ -196,11 +201,28 @@ func TestPeelDetectsTampering(t *testing.T) {
 			world: func(w *world) { w.inv.Gate = nil },
 			want:  "gate/gate verdict recorded",
 		},
-		"enforced plugin failed": {
+		"security line missing": {
+			world: func(w *world) { w.inv.Verification = nil },
+			want:  "verification/security line recorded",
+		},
+		"independent rebuild differed": {
 			world: func(w *world) {
-				w.inv.Gate.Plugins = []plugin.Record{{Name: "sca", Mode: plugin.Enforce, Verdict: plugin.Fail, Blocking: true, Summary: "critical CVE"}}
+				m := &w.inv.Verification.Rebuild.Outputs[0]
+				m.Staged, m.Match = digest.Bytes([]byte("injected")), false
+				w.inv.Verification.Rebuild.Matched = false
 			},
-			want: "gate/plugin sca",
+			want: "verification/independent rebuild matched",
+		},
+		"artifact never rebuilt": {
+			world: func(w *world) { w.inv.Verification.Rebuild.Outputs = nil },
+			want:  "artifact not among the rebuilt outputs",
+		},
+		"scan of a different build": {
+			world: func(w *world) {
+				w.inv.Pipeline.Scans = []inventory.Scan{{Name: "sca", Tool: "scanner", Stage: "post-build",
+					Subject: inventory.ScanSubject{Kind: "artifact", Digest: digest.Bytes([]byte("some other build"))}}}
+			},
+			want: "scans/sca ran against this build",
 		},
 		"unpinned action in pipeline": {
 			world: func(w *world) {
@@ -242,25 +264,33 @@ func TestPeelDetectsTampering(t *testing.T) {
 	}
 }
 
-func TestPeelAdvisoryWarnings(t *testing.T) {
+func TestPeelRecordsScansWithoutJudging(t *testing.T) {
 	w := newWorld()
-	score := 0.81
 	w.inv.Gate.SensitiveChange = []string{".github/workflows/release.yml"}
-	w.inv.Gate.Plugins = []plugin.Record{{Name: "jev", Mode: plugin.Advisory, Verdict: plugin.Warn, Score: &score, Summary: "unusual commit"}}
+	w.inv.Source.Snapshot = digest.Bytes([]byte("snapshot"))
+	w.inv.Pipeline.Scans = []inventory.Scan{
+		{Name: "commit-risk", Tool: "jev", Version: "1", Stage: "pre-build", StartedAt: "2026-09-29T20:00:00Z", FinishedAt: "2026-09-29T20:00:04Z",
+			Subject: inventory.ScanSubject{Kind: "source", Digest: w.inv.Source.Snapshot}},
+		{Name: "sca", Tool: "blackduck", Version: "2026.7", Stage: "post-build", StartedAt: "2026-09-29T20:05:00Z", FinishedAt: "2026-09-29T20:31:00Z",
+			Subject: inventory.ScanSubject{Kind: "artifact", Digest: artifactDigest}, Report: &inventory.Report{Digest: digest.Bytes([]byte("report"))}},
+	}
 	r := Run(w.input(t))
 	if !r.OK() {
-		t.Fatalf("advisory findings failed verification: %v", failures(r))
+		t.Fatalf("failures: %v", failures(r))
 	}
-	var warns []string
+	var lines []string
 	for _, res := range r.Results {
-		if res.Status == Warn {
-			warns = append(warns, res.Check+": "+res.Detail)
-		}
+		lines = append(lines, string(res.Status)+" "+res.Layer+"/"+res.Check+": "+res.Detail)
 	}
-	joined := strings.Join(warns, "\n")
-	for _, want := range []string{"build-sensitive change", "plugin jev", "score 0.81"} {
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{
+		"WARN gate/build-sensitive change",
+		"PASS scans/commit-risk ran against this build: jev 1, pre-build",
+		"PASS scans/sca ran against this build: blackduck 2026.7, post-build",
+		"against file widget",
+	} {
 		if !strings.Contains(joined, want) {
-			t.Errorf("missing warning %q in:\n%s", want, joined)
+			t.Errorf("missing %q in:\n%s", want, joined)
 		}
 	}
 }

@@ -27,12 +27,14 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lint"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/peel"
+	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
 // version is set at build time with -ldflags "-X main.version=…".
 var version = "dev"
 
-const defaultSigner = "PatterCJ/build-onion/.github/workflows/onion-build.yml"
+// defaultSigner is the security line: the only workflow that seals builds.
+const defaultSigner = "PatterCJ/build-onion/.github/workflows/onion-verify.yml"
 
 const usage = `onion — layered builds you can peel back
 
@@ -42,10 +44,11 @@ Usage:
   onion gate      --snapshot FILE --event E --ref REF [--policy FILE] [--base SHA] [--out FILE]
   onion fetch     [--source DIR] [--manifest FILE] --cache DIR [--snapshot FILE]
   onion build     [--source DIR] [--manifest FILE] --cache DIR --out DIR [--snapshot FILE]
-  onion record    job|workflow|build-onion --out FILE [flags]
+  onion record    job|workflow|build-onion|scan --out FILE [flags]
+  onion compare   --staged DIR --rebuilt DIR [--out FILE]
   onion digest    [--oci] PATH...
   onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
-  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--bundles DIR] [--source DIR] [--rebuild] [--json]
+  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--json]
   onion version
 `
 
@@ -59,6 +62,7 @@ func main() {
 		"source":    cmdSource,
 		"gate":      cmdGate,
 		"record":    cmdRecord,
+		"compare":   cmdCompare,
 		"fetch":     cmdFetch,
 		"build":     cmdBuild,
 		"digest":    cmdDigest,
@@ -240,6 +244,7 @@ func cmdInventory(args []string) error {
 	records := fs.String("records", "", "directory of `onion record` files (required)")
 	platform := fs.String("platform", "local", "CI platform name")
 	gatePath := fs.String("gate", "", "gate verdict JSON from `onion gate`")
+	rebuildPath := fs.String("rebuild", "", "comparison JSON from `onion compare`")
 	fs.Parse(args)
 	if p.Repository == "" || p.Commit == "" || p.Tree == "" || p.FilesDir == "" || *snapPath == "" || *records == "" {
 		return errors.New("--repository, --commit, --tree, --files, --snapshot and --records are required")
@@ -254,6 +259,12 @@ func cmdInventory(args []string) error {
 	if *gatePath != "" {
 		p.Gate = new(gate.Verdict)
 		if err := readJSON(*gatePath, p.Gate); err != nil {
+			return err
+		}
+	}
+	if *rebuildPath != "" {
+		p.Verification = &inventory.Verification{Rebuild: new(verify.Rebuild)}
+		if err := readJSON(*rebuildPath, p.Verification.Rebuild); err != nil {
 			return err
 		}
 	}
@@ -277,6 +288,7 @@ func cmdPeel(args []string) error {
 	source := fs.String("source", "", "local checkout to peel down to the source layer")
 	rebuild := fs.Bool("rebuild", false, "rebuild from --source and compare digests (needs docker)")
 	asJSON := fs.Bool("json", false, "print the report as JSON")
+	oci := fs.Bool("oci", false, "ARTIFACT is an OCI image-layout tarball; verify its image digest")
 	artifact, rest := splitPositional(args)
 	fs.Parse(rest)
 	if artifact == "" && fs.NArg() == 1 {
@@ -289,7 +301,13 @@ func cmdPeel(args []string) error {
 		return errors.New("--rebuild needs --source")
 	}
 
-	d, err := resolveDigest(artifact)
+	var d string
+	var err error
+	if *oci {
+		d, err = digest.OCIArchive(artifact)
+	} else {
+		d, err = resolveDigest(artifact)
+	}
 	if err != nil {
 		return err
 	}

@@ -43,7 +43,7 @@ build:
 
 ## 2. Make it reproducible
 
-`peel --rebuild` passes only if the build is deterministic. Common fixes:
+The security line seals only if its independent rebuild matches the build line byte for byte, so the build must be deterministic. Common fixes:
 
 - Go: `-trimpath`, `-buildvcs=false`, `-ldflags=-buildid=`, `CGO_ENABLED=0`, `GOTOOLCHAIN=local`.
 - Anything that embeds time: honor `SOURCE_DATE_EPOCH`.
@@ -51,11 +51,40 @@ build:
 
 ## 3. Add a policy (optional)
 
-Without one, only `push`/`workflow_dispatch`/`release` builds of `main` and `v*` tags are sealed. See [policy.md](policy.md) to change that, flag more sensitive paths, or add [plugins](plugins.md). If a plugin needs secrets, pass `secrets: inherit`. Each plugin receives only the secret names it declares.
+Without one, only `push`/`workflow_dispatch`/`release` builds of `main` and `v*` tags are sealed. See [policy.md](policy.md) to change that or flag more sensitive paths. To record the scanners your pipeline runs, see [scans.md](scans.md).
 
-## 4. Pin the workflow
+## 4. Wire the three lines
 
-Call the reusable workflow by **commit SHA**, and pass `--signer-ref` to `peel` if you want to require a specific build-onion version:
+Call each reusable workflow by **commit SHA**:
+
+```yaml
+jobs:
+  build:
+    permissions: { contents: read, id-token: write }
+    uses: PatterCJ/build-onion/.github/workflows/onion-build.yml@<sha>
+
+  # …your own scan jobs here, uploading onion-record-* artifacts (see scans.md)…
+
+  verify:
+    needs: [build]
+    permissions: { contents: read, id-token: write, attestations: write }
+    uses: PatterCJ/build-onion/.github/workflows/onion-verify.yml@<sha>
+    with:
+      snapshot: ${{ needs.build.outputs.snapshot }}
+      releasable: ${{ needs.build.outputs.releasable }}
+
+  publish:
+    needs: [build, verify]
+    if: needs.build.outputs.releasable == 'true'
+    permissions: { contents: write, packages: write, id-token: write }
+    uses: PatterCJ/build-onion/.github/workflows/onion-publish.yml@<sha>
+    with:
+      image-digest: ${{ needs.verify.outputs.image-digest }}
+```
+
+The `id-token` permission on the build and publish lines only lets each one read its own OIDC claims to pin the build-onion commit it runs; neither can sign. The publish job runs in the `release` environment (change it with the `environment` input). Add required reviewers there to put a human approval in front of every release.
+
+To require a specific build-onion version when verifying, pass `--signer-ref`:
 
 ```sh
 onion peel dist/widget --repo acme/widget --signer-ref refs/tags/v0.1.0

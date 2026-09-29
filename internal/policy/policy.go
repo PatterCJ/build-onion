@@ -1,6 +1,6 @@
 // Package policy is the organization-level configuration: which refs and
-// events may produce releasable artifacts, which paths are build-sensitive,
-// and which plugins run. It is deliberately separate from the per-repo build
+// events may produce releasable artifacts, and which paths are
+// build-sensitive. It is deliberately separate from the per-repo build
 // manifest — a platform team can pin one policy across every repo by wrapping
 // the reusable workflow, and a repo cannot quietly relax its own gate.
 package policy
@@ -14,8 +14,6 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/PatterCJ/build-onion/internal/plugin"
 )
 
 const APIVersion = "build-onion/policy/v1"
@@ -25,8 +23,7 @@ type Policy struct {
 	Release    Release `yaml:"release" json:"release"`
 	// SensitivePaths are added to the built-in list (workflows, manifest,
 	// lockfiles, Dockerfile, the policy itself). Globs; "dir/**" matches a subtree.
-	SensitivePaths []string      `yaml:"sensitivePaths" json:"sensitivePaths,omitempty"`
-	Plugins        []plugin.Spec `yaml:"plugins" json:"plugins,omitempty"`
+	SensitivePaths []string `yaml:"sensitivePaths" json:"sensitivePaths,omitempty"`
 }
 
 // Release says when a build may be sealed. Anything else still builds and is
@@ -93,14 +90,6 @@ func (p *Policy) Validate() error {
 		} else if _, err := path.Match(r, ""); err != nil {
 			errs = append(errs, fmt.Errorf("release.refs: %q: %v", r, err))
 		}
-	}
-	names := map[string]bool{}
-	for i := range p.Plugins {
-		errs = append(errs, p.Plugins[i].Validate())
-		if names[p.Plugins[i].Name] {
-			errs = append(errs, fmt.Errorf("plugin %q declared twice", p.Plugins[i].Name))
-		}
-		names[p.Plugins[i].Name] = true
 	}
 	return errors.Join(errs...)
 }

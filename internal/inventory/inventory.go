@@ -17,6 +17,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
 const PredicateType = "https://github.com/PatterCJ/build-onion/inventory/v1"
@@ -33,8 +34,15 @@ type Inventory struct {
 	Outputs     []Output `json:"outputs"`
 	Run         Run      `json:"run"`
 	Pipeline    Pipeline `json:"pipeline"`
-	// Gate is the pre-build verdict: release policy, sensitive changes, plugins.
+	// Gate is the pre-build verdict: release policy and sensitive changes.
 	Gate *gate.Verdict `json:"gate,omitempty"`
+	// Verification is the security line's result: the independent rebuild.
+	// Present on everything the security line seals.
+	Verification *Verification `json:"verification,omitempty"`
+}
+
+type Verification struct {
+	Rebuild *verify.Rebuild `json:"rebuild"`
 }
 
 type FileRef struct {
@@ -92,9 +100,10 @@ type Params struct {
 	InvocationURL string
 	// Snapshot is the source snapshot taken before the build. Generate
 	// re-verifies SourceDir against it.
-	Snapshot *source.Snapshot
-	Pipeline Pipeline
-	Gate     *gate.Verdict
+	Snapshot     *source.Snapshot
+	Pipeline     Pipeline
+	Gate         *gate.Verdict
+	Verification *Verification
 }
 
 // Generate builds the inventory. It hashes everything itself; it never trusts
@@ -110,13 +119,19 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 	if err := checkSnapshot(p); err != nil {
 		return nil, nil, err
 	}
+	if v := p.Verification; v != nil {
+		if v.Rebuild == nil || !v.Rebuild.Matched {
+			return nil, nil, errors.New("independent rebuild did not match the build line; refusing to inventory for sealing")
+		}
+	}
 	inv := &Inventory{
 		Manifest: FileRef{Path: p.ManifestPath, Digest: manifest.Digest(raw)},
 		Source: Source{Repository: p.Repository, Commit: p.Commit, Tree: p.Tree,
 			Snapshot: p.Snapshot.Digest, Files: len(p.Snapshot.Files)},
-		Pipeline: p.Pipeline,
-		Gate:     p.Gate,
-		Builder:  Builder{Image: m.Builder.Image},
+		Pipeline:     p.Pipeline,
+		Gate:         p.Gate,
+		Verification: p.Verification,
+		Builder:      Builder{Image: m.Builder.Image},
 		Build: Build{
 			Fetch:   m.Dependencies.Fetch,
 			Run:     m.Build.Run,
@@ -162,7 +177,30 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		}
 		inv.Outputs = append(inv.Outputs, Output{Kind: "oci-image", Name: img.Name, Digest: d})
 	}
+	if err := checkScans(inv); err != nil {
+		return nil, nil, err
+	}
 	return inv, m, nil
+}
+
+// checkScans requires every recorded scan to be about this build's bytes:
+// the source snapshot or one of the outputs. A report from another build or
+// an older commit can't be recorded against this one.
+func checkScans(inv *Inventory) error {
+	var errs []error
+	for _, s := range inv.Pipeline.Scans {
+		switch s.Subject.Kind {
+		case "source":
+			if s.Subject.Digest != inv.Source.Snapshot {
+				errs = append(errs, fmt.Errorf("scan %s examined source %s, but this build's snapshot is %s", s.Name, s.Subject.Digest, inv.Source.Snapshot))
+			}
+		case "artifact":
+			if _, ok := inv.Subject(s.Subject.Digest); !ok {
+				errs = append(errs, fmt.Errorf("scan %s examined artifact %s, which this build did not produce", s.Name, s.Subject.Digest))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // checkSnapshot requires the pre-build snapshot to describe this commit and

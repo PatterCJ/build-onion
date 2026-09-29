@@ -1,5 +1,6 @@
-# build-onion builds itself through its own reusable workflow, then the CLI it
-# just produced peels its own artifacts back — including a full rebuild.
+# build-onion builds, verifies and publishes itself through its own three
+# lines, with a scan recorded along the way, then the published image peels
+# itself.
 name: release
 
 on:
@@ -11,43 +12,102 @@ on:
 permissions: {}
 
 jobs:
-  onion:
+  build:
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/onion-build.yml
+
+  # An ordinary pipeline scan. build-onion doesn't run or judge it; the job
+  # records that it ran, when, and against which source snapshot.
+  vulncheck:
+    name: scan (govulncheck)
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      ONION: /tmp/onion-bin/onion
+      SNAPSHOT: ${{ needs.build.outputs.snapshot }}
+      GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.8.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-cli
+          path: /tmp/onion-bin
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-snapshot
+          path: /tmp/onion-snap
+      - name: Scan the snapshotted source and record it
+        env:
+          CLI_DIGEST: ${{ needs.build.outputs.cli-digest }}
+        run: |
+          echo "$CLI_DIGEST  $ONION" | sha256sum -c
+          chmod +x "$ONION"
+          "$ONION" source verify --snapshot /tmp/onion-snap/source.json --expect "$SNAPSHOT"
+          mkdir -p /tmp/onion-rec /tmp/scan-report
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          go run "$GOVULNCHECK" -format json ./... > /tmp/scan-report/govulncheck.json
+          finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          "$ONION" record scan --name vulncheck --tool govulncheck --version "${GOVULNCHECK##*@}" \
+            --stage pre-build --started "$started" --finished "$finished" \
+            --subject-kind source --subject "$SNAPSHOT" \
+            --report /tmp/scan-report/govulncheck.json \
+            --report-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --out /tmp/onion-rec/scan-vulncheck.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-record-scan-vulncheck
+          path: /tmp/onion-rec
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scan-report-vulncheck
+          path: /tmp/scan-report
+          if-no-files-found: error
+
+  verify:
+    needs: [build, vulncheck]
     permissions:
       contents: read
       id-token: write
       attestations: write
+    uses: ./.github/workflows/onion-verify.yml
+    with:
+      snapshot: ${{ needs.build.outputs.snapshot }}
+      releasable: ${{ needs.build.outputs.releasable }}
+
+  publish:
+    needs: [build, verify]
+    if: needs.build.outputs.releasable == 'true'
+    permissions:
+      contents: write
       packages: write
-    uses: ./.github/workflows/onion-build.yml
+      id-token: write
+    uses: ./.github/workflows/onion-publish.yml
+    with:
+      image-digest: ${{ needs.verify.outputs.image-digest }}
 
   peel:
     name: peel (dogfood)
-    needs: onion
+    needs: publish
+    if: needs.publish.outputs.image != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: read
     env:
-      IMAGE: ${{ needs.onion.outputs.image }}
+      IMAGE: ${{ needs.publish.outputs.image }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: onion-outputs
-          path: ${{ runner.temp }}/out
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: onion-bundles
-          path: ${{ runner.temp }}/bundles
-      - name: Peel the binary — offline bundles, source, and rebuild
-        run: |
-          onion="$RUNNER_TEMP/out/files/onion"
-          chmod +x "$onion"
-          "$onion" peel "$onion" --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" \
-            --bundles "$RUNNER_TEMP/bundles" --source . --rebuild | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Peel the image with the image — online, via the attestations API
-        if: env.IMAGE != ''
+      - name: The published image peels itself via the attestations API
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |

@@ -1,20 +1,16 @@
 // Package gate decides, before anything is built, whether this commit may be
 // built at all and whether its result may be released: the event and ref
-// policy, which build-sensitive files it touched, and the verdicts of any
-// gate plugins (for example a model-based commit risk score).
+// policy, and which build-sensitive files it touched.
 package gate
 
 import (
-	"context"
 	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
 
 	"github.com/PatterCJ/build-onion/internal/manifest"
-	"github.com/PatterCJ/build-onion/internal/plugin"
 	"github.com/PatterCJ/build-onion/internal/policy"
-	"github.com/PatterCJ/build-onion/internal/source"
 )
 
 // Params are the facts the CI platform knows about this run.
@@ -24,8 +20,17 @@ type Params struct {
 	PolicyPath   string // as given to the pipeline; itself build-sensitive
 	Repository   string
 	Base         string // previous build point (e.g. the push's "before"); empty if unknown
-	Context      plugin.Context
+	Context      Context
 	Fork         bool // the commit comes from a fork
+}
+
+// Context is what the CI platform says triggered this run.
+type Context struct {
+	Platform string `json:"platform"` // github-actions, aws-codebuild, local, …
+	Event    string `json:"event"`
+	Ref      string `json:"ref"`
+	Actor    string `json:"actor,omitempty"`
+	RunURL   string `json:"runUrl,omitempty"`
 }
 
 // Verdict is recorded in the inventory.
@@ -33,19 +38,19 @@ type Verdict struct {
 	Releasable bool   `json:"releasable"`
 	Reason     string `json:"reason"`
 	// Blocked means the gate stops the pipeline outright.
-	Blocked         bool            `json:"blocked"`
-	BlockedBy       []string        `json:"blockedBy,omitempty"`
-	Base            string          `json:"base,omitempty"`
-	ChangedFiles    int             `json:"changedFiles"`
-	ChangeKnown     bool            `json:"changeKnown"`
-	SensitiveChange []string        `json:"sensitiveChange,omitempty"`
-	Plugins         []plugin.Record `json:"plugins,omitempty"`
-	PolicyDigest    string          `json:"policyDigest,omitempty"`
+	Blocked         bool     `json:"blocked"`
+	BlockedBy       []string `json:"blockedBy,omitempty"`
+	Base            string   `json:"base,omitempty"`
+	ChangedFiles    int      `json:"changedFiles"`
+	ChangeKnown     bool     `json:"changeKnown"`
+	SensitiveChange []string `json:"sensitiveChange,omitempty"`
+	PolicyDigest    string   `json:"policyDigest,omitempty"`
+	Context         Context  `json:"context"`
 }
 
-// Evaluate runs the gate. snap is the source snapshot the build will use.
-func Evaluate(ctx context.Context, p Params, pol *policy.Policy, m *manifest.Manifest, snap *source.Snapshot, run plugin.Runner) (*Verdict, error) {
-	v := &Verdict{Base: p.Base}
+// Evaluate runs the gate.
+func Evaluate(p Params, pol *policy.Policy, m *manifest.Manifest) (*Verdict, error) {
+	v := &Verdict{Base: p.Base, Context: p.Context}
 	if policy.Forbidden(p.Context.Event) {
 		v.Blocked = true
 		v.BlockedBy = append(v.BlockedBy, fmt.Sprintf("event %s runs untrusted code with repository privileges; build-onion refuses it", p.Context.Event))
@@ -72,25 +77,6 @@ func Evaluate(ctx context.Context, p Params, pol *policy.Policy, m *manifest.Man
 		}
 	}
 
-	req := plugin.Request{
-		Source:  plugin.Source{Repository: p.Repository, Commit: snap.Commit, Tree: snap.Tree, SnapshotDigest: snap.Digest},
-		Change:  &plugin.Change{Base: p.Base, Files: changed, Sensitive: v.SensitiveChange},
-		Context: p.Context,
-	}
-	if !known {
-		req.Change = nil
-	}
-	for _, spec := range pol.Plugins {
-		if spec.Hook != plugin.HookGate {
-			continue
-		}
-		rec := run.Run(ctx, spec, p.SourceDir, req)
-		v.Plugins = append(v.Plugins, rec)
-		if rec.Blocking {
-			v.Blocked = true
-			v.BlockedBy = append(v.BlockedBy, fmt.Sprintf("plugin %s: %s: %s", rec.Name, rec.Verdict, rec.Summary))
-		}
-	}
 	return v, nil
 }
 

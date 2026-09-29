@@ -10,6 +10,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/PatterCJ/build-onion/internal/digest"
 )
 
 // Pipeline records what ran the build, not just what was built: the build-onion
@@ -21,6 +24,81 @@ type Pipeline struct {
 	BuildOnion BuildOnionRef `json:"buildOnion"`
 	Workflows  []Workflow    `json:"workflows"`
 	Jobs       []Job         `json:"jobs"`
+	Scans      []Scan        `json:"scans,omitempty"`
+}
+
+// Scan records that a tool ran against this build. build-onion does not read
+// or judge the tool's findings; it records what ran, at which stage, when,
+// against exactly which bytes, and the digest of the report it produced, so
+// the report can later be proven to belong to this build.
+type Scan struct {
+	Name       string      `json:"name"` // the pipeline's name for this check, e.g. "sca"
+	Tool       string      `json:"tool"`
+	Version    string      `json:"version,omitempty"`
+	Stage      string      `json:"stage"` // pre-build | post-build
+	StartedAt  string      `json:"startedAt"`
+	FinishedAt string      `json:"finishedAt"`
+	Subject    ScanSubject `json:"subject"`
+	Report     *Report     `json:"report,omitempty"`
+}
+
+// ScanSubject is what the tool examined.
+type ScanSubject struct {
+	Kind   string `json:"kind"`   // source (the snapshot) | artifact (an output)
+	Digest string `json:"digest"` // snapshot digest or output digest
+}
+
+type Report struct {
+	Digest string `json:"digest"`        // sha256 of the report as the tool wrote it
+	URL    string `json:"url,omitempty"` // where the report is kept
+}
+
+const (
+	StagePreBuild  = "pre-build"
+	StagePostBuild = "post-build"
+)
+
+var scanNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
+// Validate checks a scan record's shape. Whether it is about this build is
+// checked when the inventory is generated.
+func (s Scan) Validate() error {
+	var errs []error
+	add := func(f string, a ...any) {
+		errs = append(errs, fmt.Errorf("scan %q: "+f, append([]any{s.Name}, a...)...))
+	}
+	if !scanNameRe.MatchString(s.Name) {
+		add("name must be lowercase alphanumeric with . _ -")
+	}
+	if s.Tool == "" {
+		add("tool is required")
+	}
+	if s.Stage != StagePreBuild && s.Stage != StagePostBuild {
+		add("stage must be %s or %s", StagePreBuild, StagePostBuild)
+	}
+	start, err1 := time.Parse(time.RFC3339, s.StartedAt)
+	end, err2 := time.Parse(time.RFC3339, s.FinishedAt)
+	if err1 != nil || err2 != nil {
+		add("startedAt and finishedAt must be RFC 3339 times")
+	} else if end.Before(start) {
+		add("finishedAt is before startedAt")
+	}
+	switch s.Subject.Kind {
+	case "source":
+	case "artifact":
+		if s.Stage == StagePreBuild {
+			add("a pre-build scan cannot examine an artifact")
+		}
+	default:
+		add("subject.kind must be source or artifact")
+	}
+	if !digest.Valid(s.Subject.Digest) {
+		add("subject.digest must be sha256:<hex>")
+	}
+	if s.Report != nil && !digest.Valid(s.Report.Digest) {
+		add("report.digest must be sha256:<hex>")
+	}
+	return errors.Join(errs...)
 }
 
 type BuildOnionRef struct {
@@ -50,10 +128,11 @@ type Tool struct {
 // Record files are written by `onion record` in each job and merged by
 // `onion inventory --records DIR`.
 type record struct {
-	Kind     string         `json:"kind"` // job | workflow | build-onion
+	Kind     string         `json:"kind"` // job | workflow | build-onion | scan
 	Job      *Job           `json:"job,omitempty"`
 	Workflow *Workflow      `json:"workflow,omitempty"`
 	Onion    *BuildOnionRef `json:"buildOnion,omitempty"`
+	Scan     *Scan          `json:"scan,omitempty"`
 }
 
 func WriteJobRecord(p string, j Job) error {
@@ -67,6 +146,13 @@ func WriteWorkflowRecord(p string, w Workflow) error {
 
 func WriteBuildOnionRecord(p string, b BuildOnionRef) error {
 	return writeRecord(p, record{Kind: "build-onion", Onion: &b})
+}
+
+func WriteScanRecord(p string, s Scan) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	return writeRecord(p, record{Kind: "scan", Scan: &s})
 }
 
 func writeRecord(p string, r record) error {
@@ -101,9 +187,16 @@ func ReadPipeline(dir, platform string) (Pipeline, error) {
 			pl.Jobs = append(pl.Jobs, *r.Job)
 		case r.Kind == "workflow" && r.Workflow != nil:
 			pl.Workflows = append(pl.Workflows, *r.Workflow)
+		case r.Kind == "scan" && r.Scan != nil:
+			if err := r.Scan.Validate(); err != nil {
+				return pl, fmt.Errorf("%s: %w", p, err)
+			}
+			pl.Scans = append(pl.Scans, *r.Scan)
 		case r.Kind == "build-onion" && r.Onion != nil:
-			if pl.BuildOnion.Commit != "" {
-				return pl, fmt.Errorf("%s: second build-onion record", p)
+			// Each line resolves build-onion independently; they must agree
+			// on the commit, so one build is never driven by two versions.
+			if pl.BuildOnion.Commit != "" && pl.BuildOnion.Commit != r.Onion.Commit {
+				return pl, fmt.Errorf("%s: build-onion %s, but another line ran %s", p, r.Onion.Commit, pl.BuildOnion.Commit)
 			}
 			pl.BuildOnion = *r.Onion
 		default:

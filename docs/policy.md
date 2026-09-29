@@ -1,6 +1,6 @@
 # Policy
 
-The **manifest** (`build-onion.yml`) belongs to the repository and describes *what* to build. The **policy** belongs to whoever owns the build platform and describes *what is allowed*: which builds may become releases, which changes deserve scrutiny, and which [plugins](plugins.md) run.
+The **manifest** (`build-onion.yml`) belongs to the repository and describes *what* to build. The **policy** belongs to whoever owns the build platform and describes *what is allowed*: which builds may become releases, and which changes count as build-sensitive.
 
 ```yaml
 apiVersion: build-onion/policy/v1
@@ -17,17 +17,9 @@ release:
 sensitivePaths:
   - scripts/release/**
   - Makefile
-
-plugins:
-  - name: commit-risk
-    hook: gate
-    mode: advisory
-    image: ghcr.io/acme/commit-risk@sha256:…
-    network: true
-    secrets: [RISK_API_KEY]
 ```
 
-With no policy file, the defaults above apply with no plugins.
+With no policy file, the defaults above apply.
 
 ## Refused outright
 
@@ -43,15 +35,22 @@ on:
   workflow_call:
 jobs:
   build:
-    permissions: { contents: read, id-token: write, attestations: write, packages: write }
+    permissions: { contents: read, id-token: write }
     uses: PatterCJ/build-onion/.github/workflows/onion-build.yml@<sha>
     with:
       policy: .build-onion/policy.yml     # checked in by your org's repo template
-    secrets: inherit
+  verify:
+    needs: build
+    permissions: { contents: read, id-token: write, attestations: write }
+    uses: PatterCJ/build-onion/.github/workflows/onion-verify.yml@<sha>
+    with:
+      snapshot: ${{ needs.build.outputs.snapshot }}
+      releasable: ${{ needs.build.outputs.releasable }}
+      runs-on: acme-isolated-verifiers   # separate infrastructure for the rebuild
 ```
 
 Then have repositories call `acme/platform/.github/workflows/secure-build.yml@<sha>`, and require that workflow with a repository ruleset. When verifying, pin the signer to your wrapper's build-onion ref with `onion peel --signer-ref`.
 
 ## Where it's recorded
 
-The gate's verdict goes into the signed inventory: releasable or not and why, the diff base, the build-sensitive files changed, every plugin result, and the sha256 of the policy file. `onion peel` fails if the gate didn't allow a release. Sensitive changes and non-passing advisory plugins show up as warnings.
+The gate's verdict goes into the signed inventory: releasable or not and why, the diff base, the build-sensitive files changed, and the sha256 of the policy file. `onion peel` fails if the gate didn't allow a release, and shows sensitive changes as warnings.

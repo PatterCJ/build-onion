@@ -1,0 +1,327 @@
+# build-onion security line. It trusts nothing the build line reports: it
+# resolves and builds its own CLI, re-snapshots the source, rebuilds from the
+# same hashed inputs on its own runners, and seals only if its bytes match the
+# build line's. It is the only workflow that signs, so its identity is the one
+# `onion peel` requires.
+#
+#   jobs:
+#     verify:
+#       needs: [build]                      # plus any scan jobs to be recorded
+#       permissions: { contents: read, id-token: write, attestations: write }
+#       uses: PatterCJ/build-onion/.github/workflows/onion-verify.yml@<commit sha>
+#       with:
+#         snapshot: ${{ needs.build.outputs.snapshot }}
+#         releasable: ${{ needs.build.outputs.releasable }}
+#
+# Jobs:
+#   resolve   pin this workflow's own build-onion commit (from OIDC) and build the CLI
+#   rebuild   independent fetch + hermetic build + image; compare with the build line
+#   seal      releasable builds only: inventory (source, pipeline, gate, rebuild,
+#             scan records), SBOM, and SLSA provenance, signed
+name: onion-verify
+
+on:
+  workflow_call:
+    inputs:
+      manifest:
+        description: Path to the build manifest, relative to the repo root.
+        type: string
+        default: build-onion.yml
+      snapshot:
+        description: Source snapshot digest from the build line (onion-build.yml output).
+        type: string
+        required: true
+      releasable:
+        description: The build line gate's verdict (onion-build.yml output).
+        type: string
+        required: true
+      runs-on:
+        description: Runner for the independent rebuild. Point it at separate infrastructure where available.
+        type: string
+        default: ubuntu-24.04
+    outputs:
+      files-checksums:
+        description: sha256sum-format checksums of the sealed file outputs.
+        value: ${{ jobs.seal.outputs.files-checksums }}
+      image-digest:
+        description: Digest of the sealed image (empty if none).
+        value: ${{ jobs.seal.outputs.image-digest }}
+
+permissions: {}
+
+env:
+  ONION: /tmp/onion-verify-bin/onion
+  STAGED: /tmp/onion-staged
+  # Everything the security line produces and seals lives under one directory:
+  # out/ (files/, image.tar), source.json, rebuild.json.
+  VERIFIED: /tmp/onion-verified
+  ONION_REC: /tmp/onion-rec
+  MANIFEST: ${{ inputs.manifest }}
+  SNAPSHOT: ${{ inputs.snapshot }}
+
+jobs:
+  resolve:
+    name: resolve verifier
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+    outputs:
+      cli-digest: ${{ steps.cli.outputs.digest }}
+    steps:
+      - name: Identify this reusable workflow's commit
+        id: who
+        run: |
+          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=build-onion" | jq -r .value)
+          claims=$(python3 -c 'import sys,json,base64; p=sys.argv[1].split(".")[1]; print(base64.urlsafe_b64decode(p+"="*(-len(p)%4)).decode())' "$token")
+          ref=$(jq -r .job_workflow_ref <<<"$claims")
+          sha=$(jq -r .job_workflow_sha <<<"$claims")
+          repo=${ref%%/.github/workflows/*}
+          [[ "$sha" =~ ^[0-9a-f]{40}$ && "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "unexpected claims: $ref $sha"; exit 1; }
+          echo "build-onion (security line): $ref ($sha)"
+          { echo "repo=$repo"; echo "sha=$sha"; echo "ref=$ref"; } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.who.outputs.repo }}
+          ref: ${{ steps.who.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build onion CLI
+        id: cli
+        run: |
+          mkdir -p "$(dirname "$ONION")"
+          CGO_ENABLED=0 go build -trimpath -o "$ONION" ./cmd/onion
+          echo "digest=$(sha256sum "$ONION" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Pipeline layer — record the verifier
+        env:
+          REPO: ${{ steps.who.outputs.repo }}
+          SHA: ${{ steps.who.outputs.sha }}
+          REF: ${{ steps.who.outputs.ref }}
+        run: |
+          mkdir -p "$ONION_REC"
+          "$ONION" record build-onion --repository "$REPO" --commit "$SHA" \
+            --cli-digest "sha256:$(sha256sum "$ONION" | cut -d' ' -f1)" --out "$ONION_REC/build-onion-verify.json"
+          "$ONION" record workflow --role security-line --ref "$REF" \
+            --file .github/workflows/onion-verify.yml --out "$ONION_REC/workflow-verify.json"
+          "$ONION" record job --name verify-resolve --runner "$ImageOS $ImageVersion" \
+            --tool go="$(go env GOVERSION)" --out "$ONION_REC/job-verify-resolve.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-verify-cli
+          path: /tmp/onion-verify-bin/onion
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-record-verify-resolve
+          path: /tmp/onion-rec
+          if-no-files-found: error
+
+  rebuild:
+    name: independent rebuild
+    needs: resolve
+    runs-on: ${{ inputs.runs-on }}
+    # Runs caller-controlled build commands, so no id-token here either.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-verify-cli
+          path: /tmp/onion-verify-bin
+      - name: Source layer — snapshot independently; must equal the build line's
+        run: |
+          echo "${{ needs.resolve.outputs.cli-digest }}  $ONION" | sha256sum -c
+          chmod +x "$ONION"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          own=$("$ONION" source snapshot --out "$VERIFIED/source.json")
+          echo "security line snapshot: $own"
+          echo "build line snapshot:    $SNAPSHOT"
+          test "$own" = "$SNAPSHOT"
+      - name: Rebuild — fetch and hermetic build from the same hashed inputs
+        run: |
+          "$ONION" validate --manifest "$MANIFEST" --github-output "$GITHUB_OUTPUT"
+          "$ONION" fetch --manifest "$MANIFEST" --snapshot "$VERIFIED/source.json" --cache "$RUNNER_TEMP/deps"
+          "$ONION" build --manifest "$MANIFEST" --snapshot "$VERIFIED/source.json" \
+            --cache "$RUNNER_TEMP/deps" --out "$VERIFIED/out/files"
+        id: plan
+      - if: steps.plan.outputs.has_image == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Rebuild — reproducible OCI image
+        if: steps.plan.outputs.has_image == 'true'
+        env:
+          DOCKERFILE: ${{ steps.plan.outputs.dockerfile }}
+          CONTEXT: ${{ steps.plan.outputs.context }}
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          docker buildx build --network=none --platform linux/amd64 \
+            --provenance=false --sbom=false \
+            --output "type=oci,dest=$VERIFIED/out/image.tar,rewrite-timestamp=true" \
+            -f "$DOCKERFILE" "$CONTEXT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-outputs
+          path: ${{ env.STAGED }}
+      - name: Compare with the build line, byte for byte
+        run: |
+          mkdir -p "$ONION_REC"
+          "$ONION" compare --manifest "$MANIFEST" --staged "$STAGED" --rebuilt "$VERIFIED/out" \
+            --runner "$ImageOS $ImageVersion ($RUNNER_NAME)" --out "$VERIFIED/rebuild.json"
+          "$ONION" record job --name rebuild --runner "$ImageOS $ImageVersion" \
+            --tool docker="$(docker version --format '{{.Server.Version}}')" \
+            --tool buildx="$(docker buildx version 2>/dev/null | cut -d' ' -f2)" \
+            --out "$ONION_REC/job-rebuild.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-verified
+          # The security line's own bytes, snapshot and comparison: what gets sealed.
+          path: ${{ env.VERIFIED }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-record-rebuild
+          path: /tmp/onion-rec
+          if-no-files-found: error
+
+  seal:
+    needs: [resolve, rebuild]
+    if: inputs.releasable == 'true'
+    runs-on: ubuntu-24.04
+    # The only job in build-onion that can sign. It runs build-onion's code and
+    # pinned actions only.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      files-checksums: ${{ steps.subjects.outputs.checksums }}
+      image-digest: ${{ steps.subjects.outputs.image_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-verify-cli
+          path: /tmp/onion-verify-bin
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-verified
+          path: ${{ env.VERIFIED }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-gate
+          path: /tmp/onion-gate
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          # Build line, security line, and any scan records the caller's jobs uploaded.
+          pattern: onion-record-*
+          merge-multiple: true
+          path: ${{ env.ONION_REC }}
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        id: syft
+      - name: Inventory layer — hash everything, trust nothing reported
+        id: subjects
+        env:
+          SYFT: ${{ steps.syft.outputs.cmd }}
+        run: |
+          echo "${{ needs.resolve.outputs.cli-digest }}  $ONION" | sha256sum -c
+          chmod +x "$ONION"
+          out=$VERIFIED/out snap=$VERIFIED/source.json cmp=$VERIFIED/rebuild.json
+          "$ONION" record job --name seal --runner "$ImageOS $ImageVersion" \
+            --tool syft="$("$SYFT" version -o json | jq -r .version)" \
+            --out "$ONION_REC/job-seal.json"
+          image_args=()
+          [ -f "$out/image.tar" ] && image_args=(--image-archive "$out/image.tar")
+          "$ONION" inventory --manifest "$MANIFEST" \
+            --snapshot "$snap" --expect-snapshot "$SNAPSHOT" \
+            --records "$ONION_REC" --gate /tmp/onion-gate/gate.json --rebuild "$cmp" \
+            --platform github-actions \
+            --repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" --tree "$(git rev-parse 'HEAD^{tree}')" \
+            --files "$out/files" "${image_args[@]}" \
+            --invocation "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            > "$RUNNER_TEMP/inventory.json"
+          (cd "$out/files" && sha256sum -- *) > "$RUNNER_TEMP/files.sha256"
+          { echo 'checksums<<EOF'; cat "$RUNNER_TEMP/files.sha256"; echo EOF; } >> "$GITHUB_OUTPUT"
+          "$SYFT" scan "dir:$out/files" -o "cyclonedx-json=$RUNNER_TEMP/files.cdx.json"
+          if [ -f "$out/image.tar" ]; then
+            echo "image_digest=$("$ONION" digest --oci "$out/image.tar")" >> "$GITHUB_OUTPUT"
+            echo "image_name=$(jq -r '.outputs[] | select(.kind=="oci-image") | .name' "$RUNNER_TEMP/inventory.json")" >> "$GITHUB_OUTPUT"
+            "$SYFT" scan "oci-archive:$out/image.tar" -o "cyclonedx-json=$RUNNER_TEMP/image.cdx.json"
+          fi
+
+      # --- file outputs ---
+      - name: Seal files — SLSA provenance
+        id: files-prov
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/files.sha256
+      - name: Seal files — SBOM
+        id: files-sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/files.sha256
+          sbom-path: ${{ runner.temp }}/files.cdx.json
+      - name: Seal files — inventory
+        id: files-inv
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/files.sha256
+          predicate-type: https://github.com/PatterCJ/build-onion/inventory/v1
+          predicate-path: ${{ runner.temp }}/inventory.json
+
+      # --- image output: sealed by digest; the publish line pushes it ---
+      - name: Seal image — SLSA provenance
+        id: image-prov
+        if: steps.subjects.outputs.image_digest != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.subjects.outputs.image_name }}
+          subject-digest: ${{ steps.subjects.outputs.image_digest }}
+      - name: Seal image — SBOM
+        id: image-sbom
+        if: steps.subjects.outputs.image_digest != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.subjects.outputs.image_name }}
+          subject-digest: ${{ steps.subjects.outputs.image_digest }}
+          sbom-path: ${{ runner.temp }}/image.cdx.json
+      - name: Seal image — inventory
+        id: image-inv
+        if: steps.subjects.outputs.image_digest != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.subjects.outputs.image_name }}
+          subject-digest: ${{ steps.subjects.outputs.image_digest }}
+          predicate-type: https://github.com/PatterCJ/build-onion/inventory/v1
+          predicate-path: ${{ runner.temp }}/inventory.json
+
+      - name: Collect bundles for offline peeling
+        env:
+          BUNDLES: >-
+            ${{ steps.files-prov.outputs.bundle-path }}
+            ${{ steps.files-sbom.outputs.bundle-path }}
+            ${{ steps.files-inv.outputs.bundle-path }}
+            ${{ steps.image-prov.outputs.bundle-path }}
+            ${{ steps.image-sbom.outputs.bundle-path }}
+            ${{ steps.image-inv.outputs.bundle-path }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bundles"
+          i=0
+          for b in $BUNDLES; do i=$((i+1)); cp "$b" "$RUNNER_TEMP/bundles/$i.jsonl"; done
+          {
+            echo "### 🧅 build-onion security line sealed $(wc -l < "$RUNNER_TEMP/files.sha256") file(s)"
+            echo "Independent rebuild matched the build line. Source snapshot: \`$SNAPSHOT\`"
+            echo '```'; cat "$RUNNER_TEMP/files.sha256"; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-bundles
+          path: ${{ runner.temp }}/bundles
+          if-no-files-found: error
