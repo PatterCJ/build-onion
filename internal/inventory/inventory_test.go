@@ -181,7 +181,7 @@ func TestPipelineRecords(t *testing.T) {
 }
 
 func TestScanRecordValidation(t *testing.T) {
-	ok := Scan{Name: "sca", Tool: "blackduck", Stage: StagePostBuild,
+	ok := Scan{Name: "sca", Tool: "blackduck", Stage: StagePostBuild, Status: ScanCompleted,
 		StartedAt: "2026-09-29T20:05:00Z", FinishedAt: "2026-09-29T20:31:00Z",
 		Subject: ScanSubject{Kind: "artifact", Digest: digest.Bytes([]byte("x"))}}
 	if err := ok.Validate(); err != nil {
@@ -196,6 +196,9 @@ func TestScanRecordValidation(t *testing.T) {
 		"bad subject digest":    func(s *Scan) { s.Subject.Digest = "abc" },
 		"bad report digest":     func(s *Scan) { s.Report = &Report{Digest: "md5:1"} },
 		"missing tool":          func(s *Scan) { s.Tool = "" },
+		"missing status":        func(s *Scan) { s.Status = "" },
+		"unknown status":        func(s *Scan) { s.Status = "clean" },
+		"incomplete, no reason": func(s *Scan) { s.Status = ScanIncomplete },
 	}
 	for name, mutate := range cases {
 		s := ok
@@ -204,6 +207,11 @@ func TestScanRecordValidation(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
+	partial := ok
+	partial.Status, partial.Coverage = ScanIncomplete, "2 archives could not be extracted"
+	if err := partial.Validate(); err != nil {
+		t.Errorf("incomplete with coverage: %v", err)
+	}
 }
 
 func TestScansMustBeAboutThisBuild(t *testing.T) {
@@ -211,7 +219,7 @@ func TestScansMustBeAboutThisBuild(t *testing.T) {
 	files := t.TempDir()
 	os.WriteFile(filepath.Join(files, "widget"), []byte("binary"), 0o755)
 	scan := func(kind, d string) Scan {
-		return Scan{Name: "s", Tool: "t", Stage: StagePostBuild, StartedAt: "2026-09-29T20:00:00Z", FinishedAt: "2026-09-29T20:01:00Z",
+		return Scan{Name: "s", Tool: "t", Stage: StagePostBuild, Status: ScanCompleted, StartedAt: "2026-09-29T20:00:00Z", FinishedAt: "2026-09-29T20:01:00Z",
 			Subject: ScanSubject{Kind: kind, Digest: d}}
 	}
 	for _, tc := range []struct {

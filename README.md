@@ -81,12 +81,26 @@ $ onion peel ghcr.io/pattercj/build-onion@sha256:… --repo PatterCJ/build-onion
 | **gate** | The gate allowed release. Sensitive changes are shown as warnings. |
 | **verification** | The independent rebuild produced this exact digest. |
 | **pipeline** | The builder commit is recorded, every action is pinned, and job toolchains are recorded. |
-| **scans** | Each recorded scan: tool, stage, times, report digest, and that it examined *this* build. |
-| **dependencies** | Every Go module found *inside the artifact* is in the lockfile. |
+| **scans** | Each recorded scan: tool, stage, times, report digest, that it examined *this* build, and whether it completed. |
+| **dependencies** | Every package found *inside the artifact* is accounted for: Go modules by the lockfile, OS packages by pinned base images with networkless `RUN` steps. |
 | **source** *(`--source`)* | Every file in the checkout hashes to the signed snapshot. |
 | **rebuild** *(`--rebuild`)* | Replaying the manifest locally gives the same bytes. |
 
-`peel` exits non-zero on any FAIL, and `--json` feeds a deploy gate. Bundles come from the GitHub attestations API, or from `--bundles DIR` for offline and air-gapped verification. `--oci` verifies an image from its OCI tarball before it's pushed.
+### Graded results
+
+Every check is graded, and the verdict is the worst grade present. Incomplete evidence is never reported as clean.
+
+| Grade | Meaning | Exit |
+|---|---|---|
+| **PASSED** | The check completed and the evidence satisfies it. | 0 |
+| **DEGRADED** | The check ran, but coverage is incomplete: a scan that didn't finish, packages whose origin can't be accounted for. | 3 |
+| **UNSUPPORTED** | A specific input can't be analyzed yet, such as an ecosystem without lock-checking. | 3 |
+| **FINDING** | The analysis completed and found a violation: wrong signer, rebuild mismatch, an undeclared dependency. | 4 |
+| **FAILED** | Trustworthy evidence couldn't be produced or read: a missing attestation, an unreadable predicate. | 5 |
+
+NOTE lines add context (a build-sensitive change, bundles from other signers) without grading the artifact, and optional checks you didn't ask for are listed as *not performed*. `--allow-degraded` lets a gate accept DEGRADED and UNSUPPORTED; the publish line doesn't use it. `--json` gives the full report to a deploy gate.
+
+Bundles come from the GitHub attestations API, or from `--bundles DIR` for offline and air-gapped verification. `--oci` verifies an image from its OCI tarball before it's pushed.
 
 ## Adopt it
 
@@ -107,12 +121,12 @@ build-onion's defensible claim: it verifies declared build inputs, records what 
 - [x] Input resolution: per-file source snapshot, lockfile-verified dependencies, undeclared files fail
 - [x] Pipeline inventory: builder commit, workflows and actions, runner images and tools, scan records
 - [x] Separate build, security and publish lines; independent rebuild before signing; publish gated on `peel`
+- [x] Graded results: passed, degraded, unsupported, finding and failed, so incomplete analysis is never reported as clean
 - [ ] **Restricted egress:** fetch through an allow-list proxy to a configured artifact store (Artifactory, Nexus, GitHub Packages, …), recording every blocked attempt
 - [ ] **Observed build execution:** process tree, executed binaries, files touched and network connections, compared against the manifest
 - [ ] **Toolchain baseline:** protected, versioned profiles of what compilers and build tools normally do
 - [ ] **Artifact peeling:** filesystem inventory, permissions and privileged bits, entrypoints, trust-store changes
 - [ ] **Differential analysis** against the previous trusted release
-- [ ] **Graded results:** passed, finding, degraded, unsupported and failed, so incomplete analysis is never reported as clean
 - [ ] `onion audit-repo` for insecure repository settings: branch and tag protection, token defaults, fork approval
 
 ## Development

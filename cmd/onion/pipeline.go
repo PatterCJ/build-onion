@@ -226,6 +226,8 @@ func cmdRecord(args []string) error {
 		fs.StringVar(&sc.Stage, "stage", "", "pre-build | post-build")
 		fs.StringVar(&sc.StartedAt, "started", "", "RFC 3339 start time")
 		fs.StringVar(&sc.FinishedAt, "finished", "", "RFC 3339 finish time")
+		fs.StringVar(&sc.Status, "status", "", "whether the analysis completed: completed | incomplete | failed (not what it found)")
+		fs.StringVar(&sc.Coverage, "coverage", "", "what was not analyzed, required unless --status completed")
 		fs.StringVar(&sc.Subject.Kind, "subject-kind", "", "source | artifact")
 		fs.StringVar(&sc.Subject.Digest, "subject", "", "snapshot digest or artifact digest the tool examined")
 		report := fs.String("report", "", "report file the tool wrote (hashed, never read)")

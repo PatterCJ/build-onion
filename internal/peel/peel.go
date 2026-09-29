@@ -1,7 +1,12 @@
 // Package peel runs the reverse check. Starting from an artifact digest it
-// removes one layer at a time — seal, provenance, inventory, dependencies,
-// source, rebuild — and checks that each layer agrees with the one beneath it
-// and with what the caller claims the artifact is.
+// removes one layer at a time — seal, provenance, inventory, gate,
+// verification, pipeline, scans, dependencies, source, rebuild — and checks
+// that each layer agrees with the one beneath it and with what the caller
+// claims the artifact is.
+//
+// Every check is graded, and the report's verdict is the worst grade present.
+// Incomplete evidence is never reported as clean: a check that could not be
+// performed is Failed, Degraded or Unsupported, never Passed.
 package peel
 
 import (
@@ -28,14 +33,30 @@ const (
 	GitHubBuildType  = "https://actions.github.io/buildtypes/workflow/v1"
 )
 
+// Status grades one check.
 type Status string
 
 const (
-	Pass Status = "PASS"
-	Fail Status = "FAIL"
-	Warn Status = "WARN" // recorded concern that does not fail verification
-	Skip Status = "SKIP"
+	// Passed: the control completed and the evidence satisfies it.
+	Passed Status = "PASSED"
+	// Degraded: the check ran but its coverage is incomplete.
+	Degraded Status = "DEGRADED"
+	// Unsupported: a specific input or format could not be analyzed.
+	Unsupported Status = "UNSUPPORTED"
+	// Failed: trustworthy evidence could not be produced or read.
+	Failed Status = "FAILED"
+	// Finding: the analysis completed and found a violation.
+	Finding Status = "FINDING"
+	// Note: context worth reading that does not grade the artifact.
+	Note Status = "NOTE"
 )
+
+// rank orders grades for the overall verdict. A finding outranks a failure:
+// a confirmed problem is the more important thing to surface.
+var rank = map[Status]int{Note: 0, Passed: 0, Degraded: 1, Unsupported: 1, Failed: 2, Finding: 3}
+
+// Exit codes for each verdict, so a gate can tell them apart.
+var exitCodes = map[Status]int{Passed: 0, Degraded: 3, Unsupported: 3, Finding: 4, Failed: 5}
 
 type Result struct {
 	Layer  string `json:"layer"`
@@ -47,33 +68,49 @@ type Result struct {
 type Report struct {
 	Artifact string   `json:"artifact"`
 	Digest   string   `json:"digest"`
+	Verdict  Status   `json:"verdict"`
 	Results  []Result `json:"results"`
+	// NotPerformed lists optional checks the caller did not ask for.
+	NotPerformed []string `json:"notPerformed,omitempty"`
 }
 
-func (r *Report) OK() bool {
+// ExitCode is 0 for Passed, 3 for Degraded or Unsupported, 4 for Finding and
+// 5 for Failed. allowDegraded maps Degraded and Unsupported to 0.
+func (r *Report) ExitCode(allowDegraded bool) int {
+	if allowDegraded && (r.Verdict == Degraded || r.Verdict == Unsupported) {
+		return 0
+	}
+	return exitCodes[r.Verdict]
+}
+
+// OK reports whether the verdict is Passed.
+func (r *Report) OK() bool { return r.Verdict == Passed }
+
+func (r *Report) finish() {
+	r.Verdict = Passed
+	if len(r.Results) == 0 {
+		r.Verdict = Failed
+		return
+	}
 	for _, res := range r.Results {
-		if res.Status == Fail {
-			return false
+		if rank[res.Status] > rank[r.Verdict] {
+			r.Verdict = res.Status
 		}
 	}
-	return len(r.Results) > 0
 }
 
-func (r *Report) add(layer, check string, ok bool, detail string, a ...any) bool {
-	st := Pass
-	if !ok {
-		st = Fail
-	}
+func (r *Report) grade(layer, check string, st Status, detail string, a ...any) {
 	r.Results = append(r.Results, Result{Layer: layer, Check: check, Status: st, Detail: fmt.Sprintf(detail, a...)})
+}
+
+// check records Passed when ok, otherwise the given grade, and returns ok.
+func (r *Report) check(layer, check string, ok bool, otherwise Status, detail string, a ...any) bool {
+	st := Passed
+	if !ok {
+		st = otherwise
+	}
+	r.grade(layer, check, st, detail, a...)
 	return ok
-}
-
-func (r *Report) warn(layer, check, detail string) {
-	r.Results = append(r.Results, Result{Layer: layer, Check: check, Status: Warn, Detail: detail})
-}
-
-func (r *Report) skip(layer, check, detail string) {
-	r.Results = append(r.Results, Result{Layer: layer, Check: check, Status: Skip, Detail: detail})
 }
 
 // Claim is what the caller asserts about the artifact.
@@ -97,15 +134,16 @@ type Input struct {
 	Rebuild    bool   // re-run the build from SourceDir and compare digests
 }
 
-// Run peels every layer and returns the report. It never stops early: a
-// failed outer layer still lets inner layers report what they can see.
+// Run peels every layer and returns the graded report. It never stops early:
+// a failed outer layer still lets inner layers report what they can see.
 func Run(in Input) *Report {
 	r := &Report{Artifact: in.Artifact, Digest: in.Digest}
+	defer r.finish()
 	repoURL := "https://github.com/" + in.Claim.Repository
 
-	// Layer 1: seal — signatures, identities, and one run behind all of them.
+	// seal: signatures, identities, and one run behind all of them.
 	verified := map[string]*attest.Verified{}
-	var rejected []string
+	var invalid, otherSigners []string
 	unrelated := 0
 	for _, c := range in.Candidates {
 		if about, known := c.About(in.Digest); known && !about {
@@ -113,102 +151,102 @@ func Run(in Input) *Report {
 			continue
 		}
 		v, err := in.Verifier.Verify(c, in.Digest)
-		if err != nil {
-			rejected = append(rejected, fmt.Sprintf("%s: %v", c.Source, err))
-			continue
-		}
-		v.Source = c.Source
-		// Keep the first verified statement per predicate type.
-		if _, dup := verified[v.Statement.PredicateType]; !dup {
-			verified[v.Statement.PredicateType] = v
+		switch {
+		case err == nil:
+			if _, dup := verified[v.Statement.PredicateType]; !dup {
+				verified[v.Statement.PredicateType] = v
+			}
+		case attest.IdentityMismatch(err):
+			otherSigners = append(otherSigners, c.Source)
+		default:
+			invalid = append(invalid, fmt.Sprintf("%s: %v", c.Source, err))
 		}
 	}
-	r.add("seal", "bundles verified", len(verified) > 0,
-		"%d of %d bundles for this artifact verified against signer %s%s%s",
-		len(verified), len(in.Candidates)-unrelated, in.Signer.SignerWorkflow, unrelatedNote(unrelated), rejectedNote(rejected))
+	relevant := len(in.Candidates) - unrelated
+	r.check("seal", "bundles found", relevant > 0, Failed,
+		"%d bundle(s) name this artifact%s", relevant, unrelatedNote(unrelated))
+	// A bundle that names this artifact but fails cryptographic verification
+	// is evidence of tampering, not missing evidence.
+	r.check("seal", "no invalid bundles", len(invalid) == 0, Finding,
+		"%d verified against signer %s%s", len(verified), in.Signer.SignerWorkflow, listNote(invalid))
+	if len(otherSigners) > 0 {
+		r.grade("seal", "bundles from other signers", Note,
+			"%d validly signed bundle(s) from other identities were not used%s", len(otherSigners), listNote(otherSigners))
+	}
 	for _, pt := range []string{SLSAProvenanceV1, CycloneDX, inventory.PredicateType} {
 		_, ok := verified[pt]
-		r.add("seal", "has "+shortType(pt), ok, "%s", pt)
+		r.check("seal", "has "+shortType(pt), ok, Failed, "%s", pt)
 	}
 	var runs []string
-	for _, v := range verified {
-		cert := v.Certificate
-		r.add("seal", shortType(v.Statement.PredicateType)+" signed for claimed repo", cert.SourceRepositoryURI == repoURL,
+	for _, pt := range sortedKeys(verified) {
+		cert := verified[pt].Certificate
+		r.check("seal", shortType(pt)+" signed for claimed repo", cert.SourceRepositoryURI == repoURL, Finding,
 			"certificate source repo %q, claimed %q", cert.SourceRepositoryURI, repoURL)
 		if in.Claim.Commit != "" {
-			r.add("seal", shortType(v.Statement.PredicateType)+" signed for claimed commit", cert.SourceRepositoryDigest == in.Claim.Commit,
+			r.check("seal", shortType(pt)+" signed for claimed commit", cert.SourceRepositoryDigest == in.Claim.Commit, Finding,
 				"certificate commit %s, claimed %s", cert.SourceRepositoryDigest, in.Claim.Commit)
 		}
 		runs = append(runs, cert.RunInvocationURI)
 	}
 	if len(runs) > 0 {
-		r.add("seal", "one run signed every layer", allEqual(runs), "run %s", strings.Join(uniq(runs), ", "))
+		r.check("seal", "one run signed every layer", allEqual(runs), Finding, "run %s", strings.Join(uniq(runs), ", "))
 	}
 
-	// Layer 2: provenance — SLSA v1 from GitHub, signed by the isolated builder.
+	// provenance: SLSA v1 from GitHub, signed by the security line.
 	var prov provenance
 	if v := verified[SLSAProvenanceV1]; v != nil && decode(r, "provenance", v.Statement.Predicate, &prov) {
 		bd, rd := prov.BuildDefinition, prov.RunDetails
-		r.add("provenance", "build type", bd.BuildType == GitHubBuildType, "%s", bd.BuildType)
+		r.check("provenance", "build type", bd.BuildType == GitHubBuildType, Unsupported, "%s", bd.BuildType)
 		builderPrefix := "https://github.com/" + in.Signer.SignerWorkflow + "@"
-		r.add("provenance", "builder is build-onion", strings.HasPrefix(rd.Builder.ID, builderPrefix), "builder.id %s", rd.Builder.ID)
-		r.add("provenance", "hosted runner", bd.InternalParameters.GitHub.RunnerEnvironment == "github-hosted",
+		r.check("provenance", "builder is build-onion", strings.HasPrefix(rd.Builder.ID, builderPrefix), Finding, "builder.id %s", rd.Builder.ID)
+		r.check("provenance", "hosted runner", bd.InternalParameters.GitHub.RunnerEnvironment == "github-hosted", Finding,
 			"runner_environment %q (SLSA L3 requires a hosted build platform)", bd.InternalParameters.GitHub.RunnerEnvironment)
-		r.add("provenance", "source repository", bd.ExternalParameters.Workflow.Repository == repoURL,
+		r.check("provenance", "source repository", bd.ExternalParameters.Workflow.Repository == repoURL, Finding,
 			"workflow repository %s", bd.ExternalParameters.Workflow.Repository)
 		commit := prov.sourceCommit(repoURL)
-		r.add("provenance", "source commit recorded", commit != "", "resolvedDependencies gitCommit %q", commit)
+		r.check("provenance", "source commit recorded", commit != "", Failed, "resolvedDependencies gitCommit %q", commit)
 		if in.Claim.Commit != "" {
-			r.add("provenance", "source commit matches claim", commit == in.Claim.Commit, "provenance %s, claimed %s", commit, in.Claim.Commit)
-		}
-		if in.Claim.Commit == "" {
+			r.check("provenance", "source commit matches claim", commit == in.Claim.Commit, Finding, "provenance %s, claimed %s", commit, in.Claim.Commit)
+		} else {
 			in.Claim.Commit = commit
 		}
 	}
 
-	// Layer 3: inventory — the bottom-up record binds to the same run and source.
+	// inventory: the bottom-up record binds to the same run and source.
 	var inv inventory.Inventory
 	haveInv := false
 	if v := verified[inventory.PredicateType]; v != nil && decode(r, "inventory", v.Statement.Predicate, &inv) {
 		haveInv = true
-		r.add("inventory", "same source commit", inv.Source.Commit == in.Claim.Commit && in.Claim.Commit != "",
+		r.check("inventory", "same source commit", inv.Source.Commit == in.Claim.Commit && in.Claim.Commit != "", Finding,
 			"inventory %s, provenance %s", inv.Source.Commit, in.Claim.Commit)
-		r.add("inventory", "same run", prov.RunDetails.Metadata.InvocationID == "" || sameRun(inv.Run.InvocationURL, prov.RunDetails.Metadata.InvocationID),
+		r.check("inventory", "same run", prov.RunDetails.Metadata.InvocationID == "" || sameRun(inv.Run.InvocationURL, prov.RunDetails.Metadata.InvocationID), Finding,
 			"inventory %s, provenance %s", inv.Run.InvocationURL, prov.RunDetails.Metadata.InvocationID)
 		out, ok := inv.Subject(in.Digest)
-		r.add("inventory", "artifact is a declared output", ok, "%s %s", out.Kind, out.Name)
-		r.add("inventory", "builder pinned by digest", manifest.IsPinnedImage(inv.Builder.Image), "%s", inv.Builder.Image)
-		r.add("inventory", "build ran without network", inv.Build.Network == "none", "network %q", inv.Build.Network)
-		r.add("inventory", "inputs locked", len(inv.Lockfiles) > 0, "%d lockfile(s), %d locked dependencies", len(inv.Lockfiles), len(inv.Dependencies))
-	}
-
-	// Layer 4: gate — the build was allowed to become a release, and what the
-	// gate noticed on the way in.
-	if haveInv {
+		r.check("inventory", "artifact is a declared output", ok, Finding, "%s %s", out.Kind, out.Name)
+		r.check("inventory", "builder pinned by digest", manifest.IsPinnedImage(inv.Builder.Image), Finding, "%s", inv.Builder.Image)
+		r.check("inventory", "build ran without network", inv.Build.Network == "none", Finding, "network %q", inv.Build.Network)
+		r.check("inventory", "inputs locked", len(inv.Lockfiles) > 0, Finding, "%d lockfile(s), %d locked dependencies", len(inv.Lockfiles), len(inv.Dependencies))
 		checkGate(r, &inv)
 		checkVerification(r, &inv, in.Digest)
 		checkPipeline(r, &inv)
 		checkScans(r, &inv)
 	}
 
-	// Layer 5: dependencies — everything the SBOM finds in the artifact must be
-	// something the lockfile declared.
+	// dependencies: everything the SBOM finds in the artifact must be accounted for.
 	if v := verified[CycloneDX]; v != nil && haveInv {
-		checkDependencies(r, v.Statement.Predicate, &inv)
-	} else {
-		r.skip("dependencies", "SBOM within lockfile", "needs verified SBOM and inventory")
+		checkDependencies(r, v.Statement.Predicate, &inv, in.Digest)
 	}
 
-	// Layer 6: source — recompute the inventory's source facts from a checkout.
+	// source: recompute the inventory's source facts from a checkout.
 	if in.SourceDir == "" {
-		r.skip("source", "checkout matches inventory", "pass --source <checkout> to peel to the source")
+		r.NotPerformed = append(r.NotPerformed, "source (pass --source <checkout>)")
 	} else if haveInv {
 		checkSource(r, in.SourceDir, &inv)
 	}
 
-	// Layer 7: rebuild — run the declared build again and compare.
+	// rebuild: run the declared build again and compare.
 	if !in.Rebuild {
-		r.skip("rebuild", "reproduces artifact", "pass --rebuild with --source to rebuild")
+		r.NotPerformed = append(r.NotPerformed, "local rebuild (pass --rebuild with --source)")
 	} else if haveInv && in.SourceDir != "" {
 		checkRebuild(r, in.SourceDir, &inv, in.Digest)
 	}
@@ -257,15 +295,17 @@ func (p *provenance) sourceCommit(repoURL string) string {
 
 func checkGate(r *Report, inv *inventory.Inventory) {
 	g := inv.Gate
-	if !r.add("gate", "gate verdict recorded", g != nil, "") {
+	if !r.check("gate", "gate verdict recorded", g != nil, Failed, "") {
 		return
 	}
-	r.add("gate", "release allowed", g.Releasable && !g.Blocked, "%s", g.Reason)
+	r.check("gate", "release allowed", g.Releasable && !g.Blocked, Finding, "%s", g.Reason)
 	if len(g.SensitiveChange) > 0 {
-		r.warn("gate", "build-sensitive change", fmt.Sprintf("this commit changed %s", strings.Join(g.SensitiveChange, ", ")))
+		r.grade("gate", "build-sensitive change", Note, "this commit changed %s", strings.Join(g.SensitiveChange, ", "))
 	}
 	if !g.ChangeKnown {
-		r.warn("gate", "change set", "unknown; no previous build point to diff against")
+		// The release rules above don't depend on the diff; only this
+		// context does. Tag pushes and first pushes have no diff base.
+		r.grade("gate", "change set", Note, "not computed; no previous build point to diff against")
 	}
 }
 
@@ -273,7 +313,7 @@ func checkGate(r *Report, inv *inventory.Inventory) {
 // matched the build line for this artifact.
 func checkVerification(r *Report, inv *inventory.Inventory, d string) {
 	v := inv.Verification
-	if !r.add("verification", "security line recorded", v != nil && v.Rebuild != nil, "") {
+	if !r.check("verification", "security line recorded", v != nil && v.Rebuild != nil, Failed, "") {
 		return
 	}
 	var m *verify.Match
@@ -283,18 +323,19 @@ func checkVerification(r *Report, inv *inventory.Inventory, d string) {
 		}
 	}
 	if m == nil {
-		r.add("verification", "independent rebuild matched", false, "artifact not among the rebuilt outputs")
-	} else {
-		r.add("verification", "independent rebuild matched", m.Match && v.Rebuild.Matched,
-			"%s %s: build line %s, rebuild %s on %s", m.Kind, m.Name, m.Staged, m.Rebuilt, v.Rebuild.Runner)
+		r.grade("verification", "independent rebuild matched", Finding, "artifact not among the rebuilt outputs")
+		return
 	}
+	r.check("verification", "independent rebuild matched", m.Match && v.Rebuild.Matched, Finding,
+		"%s %s: build line %s, rebuild %s on %s", m.Kind, m.Name, m.Staged, m.Rebuilt, v.Rebuild.Runner)
 }
 
 // checkScans lists the tools the pipeline ran and binds each to this build.
-// build-onion records that a scan happened; it does not judge findings.
+// build-onion records that a scan happened and whether it completed; it does
+// not judge findings.
 func checkScans(r *Report, inv *inventory.Inventory) {
 	if len(inv.Pipeline.Scans) == 0 {
-		r.skip("scans", "scans recorded", "the pipeline recorded no scans")
+		r.grade("scans", "scans recorded", Note, "the pipeline recorded no scans")
 		return
 	}
 	for _, sc := range inv.Pipeline.Scans {
@@ -311,7 +352,17 @@ func checkScans(r *Report, inv *inventory.Inventory) {
 		if sc.Report != nil {
 			detail += ", report " + sc.Report.Digest
 		}
-		r.add("scans", sc.Name+" ran against this build", bound, "%s", detail)
+		if !r.check("scans", sc.Name+" ran against this build", bound, Finding, "%s", detail) {
+			continue
+		}
+		switch sc.Status {
+		case inventory.ScanCompleted:
+			r.grade("scans", sc.Name+" completed", Passed, "analysis completed")
+		case inventory.ScanIncomplete, inventory.ScanFailed:
+			r.grade("scans", sc.Name+" completed", Degraded, "%s: %s", sc.Status, sc.Coverage)
+		default:
+			r.grade("scans", sc.Name+" completed", Degraded, "completion not recorded")
+		}
 	}
 }
 
@@ -319,7 +370,7 @@ var pinnedUse = regexp.MustCompile(`^[^@\s]+@[a-f0-9]{40}$`)
 
 func checkPipeline(r *Report, inv *inventory.Inventory) {
 	pl := inv.Pipeline
-	r.add("pipeline", "builder commit recorded", len(pl.BuildOnion.Commit) == 40,
+	r.check("pipeline", "builder commit recorded", len(pl.BuildOnion.Commit) == 40, Failed,
 		"build-onion %s@%s", pl.BuildOnion.Repository, pl.BuildOnion.Commit)
 	var loose []string
 	n := 0
@@ -331,14 +382,27 @@ func checkPipeline(r *Report, inv *inventory.Inventory) {
 			}
 		}
 	}
-	r.add("pipeline", "every action pinned", len(pl.Workflows) > 0 && len(loose) == 0,
-		"%d action reference(s) across %d workflow(s)%s", n, len(pl.Workflows), listNote(loose))
-	r.add("pipeline", "jobs inventoried", len(pl.Jobs) > 0, "%d job(s) recorded runner and tool versions", len(pl.Jobs))
+	if len(pl.Workflows) == 0 {
+		r.grade("pipeline", "every action pinned", Failed, "no workflows recorded")
+	} else {
+		r.check("pipeline", "every action pinned", len(loose) == 0, Finding,
+			"%d action reference(s) across %d workflow(s)%s", n, len(pl.Workflows), listNote(loose))
+	}
+	r.check("pipeline", "jobs inventoried", len(pl.Jobs) > 0, Degraded, "%d job(s) recorded runner and tool versions", len(pl.Jobs))
 }
 
-func checkDependencies(r *Report, bom json.RawMessage, inv *inventory.Inventory) {
+// osPackageTypes are purl types for packages installed into an OS image.
+var osPackageTypes = map[string]bool{"deb": true, "rpm": true, "apk": true, "alpm": true}
+
+// checkDependencies accounts for every package the SBOM found in the
+// artifact. Go modules must be in the lockfile. OS packages in an image are
+// accounted for when every base image was pinned and RUN steps had no network,
+// because then they can only have come from those pinned bases. Anything else
+// is reported as unsupported rather than passed over.
+func checkDependencies(r *Report, bom json.RawMessage, inv *inventory.Inventory, d string) {
 	var doc struct {
 		Components []struct {
+			Type    string `json:"type"`
 			Name    string `json:"name"`
 			Version string `json:"version"`
 			PURL    string `json:"purl"`
@@ -348,94 +412,172 @@ func checkDependencies(r *Report, bom json.RawMessage, inv *inventory.Inventory)
 		return
 	}
 	locked := map[string]bool{}
-	for _, d := range inv.Dependencies {
-		locked[strings.ToLower(d.Name+"@"+d.Version)] = true
+	for _, dep := range inv.Dependencies {
+		locked[strings.ToLower(dep.Name+"@"+dep.Version)] = true
 	}
 	main := map[string]bool{"stdlib": true}
 	for _, m := range inv.MainModules {
 		main[m] = true
 	}
-	var undeclared []string
-	goCount, other := 0, 0
+	var undeclared, unversioned []string
+	goCount, osCount := 0, 0
+	unsupported := map[string]int{}
 	for _, c := range doc.Components {
-		name, version, ok := golangPURL(c.PURL)
-		if !ok {
-			if c.PURL != "" {
-				other++
+		if c.PURL == "" {
+			continue // files and the OS descriptor: contents, not packages
+		}
+		typ := purlType(c.PURL)
+		switch {
+		case typ == "golang":
+			name, version := golangPURL(c.PURL)
+			if main[name] {
+				continue
 			}
-			continue
-		}
-		if main[name] {
-			continue
-		}
-		goCount++
-		if !locked[strings.ToLower(name+"@"+version)] {
-			undeclared = append(undeclared, name+"@"+version)
+			goCount++
+			if version == "" {
+				unversioned = append(unversioned, name)
+			} else if !locked[strings.ToLower(name+"@"+version)] {
+				undeclared = append(undeclared, name+"@"+version)
+			}
+		case osPackageTypes[typ]:
+			osCount++
+		default:
+			unsupported[typ]++
 		}
 	}
 	sort.Strings(undeclared)
-	r.add("dependencies", "SBOM within lockfile", len(undeclared) == 0,
-		"%d Go modules found in artifact, %d not in lockfile%s", goCount, len(undeclared), listNote(undeclared))
-	if other > 0 {
-		r.skip("dependencies", "non-Go components", fmt.Sprintf("%d component(s) not lock-checked (e.g. OS packages from a pinned base image)", other))
+	sort.Strings(unversioned)
+	r.check("dependencies", "Go modules within lockfile", len(undeclared) == 0, Finding,
+		"%d Go module(s) found in artifact, %d not in lockfile%s", goCount, len(undeclared), listNote(undeclared))
+	if len(unversioned) > 0 {
+		r.grade("dependencies", "Go module versions", Degraded,
+			"%d module(s) have no version in the SBOM and can't be lock-checked%s", len(unversioned), listNote(unversioned))
+	}
+	if osCount > 0 {
+		out, _ := inv.Subject(d)
+		img := inv.Build.Image
+		switch {
+		case out.Kind == "oci-image" && img != nil && img.RunNetwork == "none" && len(img.BaseImages) > 0 && allPinned(img.BaseImages):
+			r.grade("dependencies", "OS packages from pinned base images", Passed,
+				"%d OS package(s); every base is pinned (%s) and RUN steps had no network", osCount, strings.Join(img.BaseImages, ", "))
+		default:
+			r.grade("dependencies", "OS packages from pinned base images", Degraded,
+				"%d OS package(s) whose origin the inventory can't account for", osCount)
+		}
+	}
+	if len(unsupported) > 0 {
+		var kinds []string
+		for _, t := range sortedKeys(unsupported) {
+			kinds = append(kinds, fmt.Sprintf("%s ×%d", t, unsupported[t]))
+		}
+		r.grade("dependencies", "other ecosystems", Unsupported,
+			"lock-checking %s is not supported yet", strings.Join(kinds, ", "))
 	}
 }
 
-// golangPURL parses pkg:golang/<module>@<version>[?qualifiers].
-func golangPURL(p string) (name, version string, ok bool) {
-	rest, found := strings.CutPrefix(p, "pkg:golang/")
-	if !found {
-		return "", "", false
+func allPinned(refs []string) bool {
+	for _, ref := range refs {
+		if !manifest.IsPinnedImage(ref) {
+			return false
+		}
 	}
+	return true
+}
+
+func purlType(p string) string {
+	rest, ok := strings.CutPrefix(p, "pkg:")
+	if !ok {
+		return "unknown"
+	}
+	t, _, _ := strings.Cut(rest, "/")
+	return strings.ToLower(t)
+}
+
+// golangPURL parses pkg:golang/<module>[@<version>][?qualifiers][#subpath].
+// The version is empty when absent (syft records the main module this way).
+func golangPURL(p string) (name, version string) {
+	rest := strings.TrimPrefix(p, "pkg:golang/")
 	rest, _, _ = strings.Cut(rest, "?")
 	rest, _, _ = strings.Cut(rest, "#")
-	i := strings.LastIndex(rest, "@")
-	if i < 0 {
-		return "", "", false
+	if i := strings.LastIndex(rest, "@"); i >= 0 {
+		rest, version = rest[:i], rest[i+1:]
 	}
-	n, err1 := url.PathUnescape(rest[:i])
-	v, err2 := url.PathUnescape(rest[i+1:])
-	return n, v, err1 == nil && err2 == nil
+	if n, err := url.PathUnescape(rest); err == nil {
+		rest = n
+	}
+	if v, err := url.PathUnescape(version); err == nil {
+		version = v
+	}
+	return rest, version
 }
 
 func checkSource(r *Report, dir string, inv *inventory.Inventory) {
 	head, err := git(dir, "rev-parse", "HEAD")
-	if !r.add("source", "checkout at claimed commit", err == nil && head == inv.Source.Commit, "HEAD %s, inventory %s%s", head, inv.Source.Commit, errNote(err)) {
+	if err != nil {
+		r.grade("source", "checkout at claimed commit", Failed, "%v", err)
 		return
 	}
-	tree, err := git(dir, "rev-parse", "HEAD^{tree}")
-	r.add("source", "tree hash", err == nil && tree == inv.Source.Tree, "tree %s, inventory %s%s", tree, inv.Source.Tree, errNote(err))
-	dirty, err := git(dir, "status", "--porcelain", "--untracked-files=no")
-	r.add("source", "checkout is clean", err == nil && dirty == "", "%s", firstLine(dirty))
-	if snap, err := source.Take(dir); err == nil {
-		r.add("source", "every file matches snapshot", snap.Digest == inv.Source.Snapshot,
-			"%d files hash to %s, inventory %s", len(snap.Files), snap.Digest, inv.Source.Snapshot)
+	if !r.check("source", "checkout at claimed commit", head == inv.Source.Commit, Finding, "HEAD %s, inventory %s", head, inv.Source.Commit) {
+		return
+	}
+	if tree, err := git(dir, "rev-parse", "HEAD^{tree}"); err != nil {
+		r.grade("source", "tree hash", Failed, "%v", err)
 	} else {
-		r.add("source", "every file matches snapshot", false, "%v", err)
+		r.check("source", "tree hash", tree == inv.Source.Tree, Finding, "tree %s, inventory %s", tree, inv.Source.Tree)
+	}
+	if dirty, err := git(dir, "status", "--porcelain", "--untracked-files=no"); err != nil {
+		r.grade("source", "checkout is clean", Failed, "%v", err)
+	} else {
+		r.check("source", "checkout is clean", dirty == "", Finding, "%s", firstLine(dirty))
+	}
+	if snap, err := source.Hash(dir); err != nil {
+		r.grade("source", "every file matches snapshot", Failed, "%v", err)
+	} else {
+		r.check("source", "every file matches snapshot", snap.Digest == inv.Source.Snapshot, Finding,
+			"%d files hash to %s, inventory %s", len(snap.Files), snap.Digest, inv.Source.Snapshot)
 	}
 	for _, f := range append([]inventory.FileRef{inv.Manifest}, inv.Lockfiles...) {
 		d, err := digest.File(filepath.Join(dir, f.Path))
-		r.add("source", f.Path+" unchanged", err == nil && d == f.Digest, "%s%s", d, errNote(err))
+		if err != nil {
+			r.grade("source", f.Path+" unchanged", Failed, "%v", err)
+			continue
+		}
+		r.check("source", f.Path+" unchanged", d == f.Digest, Finding, "%s", d)
 	}
 }
 
 func checkRebuild(r *Report, dir string, inv *inventory.Inventory, want string) {
 	out, ok := inv.Subject(want)
-	if !ok || out.Kind != "file" {
-		r.skip("rebuild", "reproduces artifact", "rebuild supports file outputs; images are checked via their files")
+	if !ok {
+		r.grade("rebuild", "reproduces artifact", Failed, "artifact is not an output in the inventory")
+		return
+	}
+	if out.Kind != "file" {
+		r.grade("rebuild", "reproduces artifact", Unsupported,
+			"local rebuild supports file outputs; the security line's rebuild covered this %s", out.Kind)
 		return
 	}
 	m, _, err := manifest.Load(filepath.Join(dir, inv.Manifest.Path))
-	if !r.add("rebuild", "load manifest", err == nil, "%s%s", inv.Manifest.Path, errNote(err)) {
+	if err != nil {
+		r.grade("rebuild", "reproduces artifact", Failed, "load manifest: %v", err)
 		return
 	}
 	got, err := Rebuild(dir, m, out.Name)
-	r.add("rebuild", "reproduces artifact", err == nil && got == want, "rebuilt %s, attested %s%s", got, want, errNote(err))
+	if err != nil {
+		r.grade("rebuild", "reproduces artifact", Failed, "%v", err)
+		return
+	}
+	r.check("rebuild", "reproduces artifact", got == want, Finding, "rebuilt %s, attested %s", got, want)
 }
 
+// decode grades an unreadable predicate as Failed: the evidence exists but
+// can't be used, which must never pass silently.
 func decode(r *Report, layer string, raw json.RawMessage, v any) bool {
-	err := json.Unmarshal(raw, v)
-	return r.add(layer, "predicate parses", err == nil, "%s", errNote(err))
+	if err := json.Unmarshal(raw, v); err != nil {
+		r.grade(layer, "predicate parses", Failed, "%v", err)
+		return false
+	}
+	return true
 }
 
 func git(dir string, args ...string) (string, error) {
@@ -462,6 +604,15 @@ func shortType(pt string) string {
 	return pt
 }
 
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func allEqual(xs []string) bool {
 	for _, x := range xs {
 		if x != xs[0] {
@@ -483,25 +634,11 @@ func uniq(xs []string) []string {
 	return out
 }
 
-func errNote(err error) string {
-	if err == nil {
-		return ""
-	}
-	return " (" + err.Error() + ")"
-}
-
 func unrelatedNote(n int) string {
 	if n == 0 {
 		return ""
 	}
 	return fmt.Sprintf(" (%d bundle(s) for other artifacts ignored)", n)
-}
-
-func rejectedNote(rej []string) string {
-	if len(rej) == 0 {
-		return ""
-	}
-	return "; rejected: " + strings.Join(rej, "; ")
 }
 
 func listNote(xs []string) string {

@@ -83,6 +83,9 @@ func TestVerifyRejects(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want containing %q", err, tc.want)
 			}
+			if got, want := IdentityMismatch(err), tc.want == "no matching CertificateIdentity"; got != want {
+				t.Errorf("IdentityMismatch = %v, want %v (%v)", got, want, err)
+			}
 		})
 	}
 }

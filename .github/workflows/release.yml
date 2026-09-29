@@ -55,10 +55,15 @@ jobs:
           "$ONION" source verify --snapshot /tmp/onion-snap/source.json --expect "$SNAPSHOT"
           mkdir -p /tmp/onion-rec /tmp/scan-report
           started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          go run "$GOVULNCHECK" -format json ./... > /tmp/scan-report/govulncheck.json
+          # With -format json, govulncheck exits 0 whatever it finds; a
+          # non-zero exit means the analysis itself didn't complete.
+          rc=0
+          go run "$GOVULNCHECK" -format json ./... > /tmp/scan-report/govulncheck.json || rc=$?
           finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          status=(--status completed)
+          [ "$rc" -eq 0 ] || status=(--status failed --coverage "govulncheck exited $rc")
           "$ONION" record scan --name vulncheck --tool govulncheck --version "${GOVULNCHECK##*@}" \
-            --stage pre-build --started "$started" --finished "$finished" \
+            --stage pre-build --started "$started" --finished "$finished" "${status[@]}" \
             --subject-kind source --subject "$SNAPSHOT" \
             --report /tmp/scan-report/govulncheck.json \
             --report-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \

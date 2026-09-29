@@ -32,14 +32,18 @@ type Pipeline struct {
 // against exactly which bytes, and the digest of the report it produced, so
 // the report can later be proven to belong to this build.
 type Scan struct {
-	Name       string      `json:"name"` // the pipeline's name for this check, e.g. "sca"
-	Tool       string      `json:"tool"`
-	Version    string      `json:"version,omitempty"`
-	Stage      string      `json:"stage"` // pre-build | post-build
-	StartedAt  string      `json:"startedAt"`
-	FinishedAt string      `json:"finishedAt"`
-	Subject    ScanSubject `json:"subject"`
-	Report     *Report     `json:"report,omitempty"`
+	Name       string `json:"name"` // the pipeline's name for this check, e.g. "sca"
+	Tool       string `json:"tool"`
+	Version    string `json:"version,omitempty"`
+	Stage      string `json:"stage"` // pre-build | post-build
+	StartedAt  string `json:"startedAt"`
+	FinishedAt string `json:"finishedAt"`
+	// Status is whether the analysis itself completed, not what it found.
+	Status string `json:"status"` // completed | incomplete | failed
+	// Coverage says what was not analyzed, when Status is not completed.
+	Coverage string      `json:"coverage,omitempty"`
+	Subject  ScanSubject `json:"subject"`
+	Report   *Report     `json:"report,omitempty"`
 }
 
 // ScanSubject is what the tool examined.
@@ -56,6 +60,10 @@ type Report struct {
 const (
 	StagePreBuild  = "pre-build"
 	StagePostBuild = "post-build"
+
+	ScanCompleted  = "completed"
+	ScanIncomplete = "incomplete"
+	ScanFailed     = "failed"
 )
 
 var scanNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
@@ -75,6 +83,15 @@ func (s Scan) Validate() error {
 	}
 	if s.Stage != StagePreBuild && s.Stage != StagePostBuild {
 		add("stage must be %s or %s", StagePreBuild, StagePostBuild)
+	}
+	switch s.Status {
+	case ScanCompleted:
+	case ScanIncomplete, ScanFailed:
+		if s.Coverage == "" {
+			add("coverage must say what was not analyzed when status is %s", s.Status)
+		}
+	default:
+		add("status must be %s, %s or %s", ScanCompleted, ScanIncomplete, ScanFailed)
 	}
 	start, err1 := time.Parse(time.RFC3339, s.StartedAt)
 	end, err2 := time.Parse(time.RFC3339, s.FinishedAt)

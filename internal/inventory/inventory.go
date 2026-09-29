@@ -15,6 +15,7 @@ import (
 
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/gate"
+	"github.com/PatterCJ/build-onion/internal/lint"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/verify"
@@ -76,6 +77,16 @@ type Build struct {
 	Run     string            `json:"run"`
 	Env     map[string]string `json:"env,omitempty"`
 	Network string            `json:"network"`
+	Image   *ImageBuild       `json:"image,omitempty"`
+}
+
+// ImageBuild records how the image output was assembled. With every base
+// pinned and no network in RUN steps, every file in the image comes from a
+// pinned base image or from the snapshotted source and build outputs.
+type ImageBuild struct {
+	Dockerfile FileRef  `json:"dockerfile"`
+	BaseImages []string `json:"baseImages"`
+	RunNetwork string   `json:"runNetwork"`
 }
 
 type Output struct {
@@ -168,6 +179,20 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		inv.Outputs = append(inv.Outputs, Output{Kind: "file", Name: name, Digest: d})
 	}
 	if img := m.Outputs.Image; img != nil {
+		dfPath := filepath.Join(p.SourceDir, img.Dockerfile)
+		bases, err := lint.BaseImages(dfPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		dfDigest, err := digest.File(dfPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		inv.Build.Image = &ImageBuild{
+			Dockerfile: FileRef{Path: img.Dockerfile, Digest: dfDigest},
+			BaseImages: bases,
+			RunNetwork: "none",
+		}
 		if p.ImageArchive == "" {
 			return nil, nil, errors.New("manifest declares an image but no image archive was given")
 		}

@@ -288,6 +288,7 @@ func cmdPeel(args []string) error {
 	source := fs.String("source", "", "local checkout to peel down to the source layer")
 	rebuild := fs.Bool("rebuild", false, "rebuild from --source and compare digests (needs docker)")
 	asJSON := fs.Bool("json", false, "print the report as JSON")
+	allowDegraded := fs.Bool("allow-degraded", false, "exit 0 when the verdict is DEGRADED or UNSUPPORTED")
 	oci := fs.Bool("oci", false, "ARTIFACT is an OCI image-layout tarball; verify its image digest")
 	artifact, rest := splitPositional(args)
 	fs.Parse(rest)
@@ -344,8 +345,8 @@ func cmdPeel(args []string) error {
 	} else {
 		printReport(os.Stdout, rep)
 	}
-	if !rep.OK() {
-		return exitCode(1)
+	if code := rep.ExitCode(*allowDegraded); code != 0 {
+		return exitCode(code)
 	}
 	return nil
 }
@@ -382,25 +383,31 @@ func printReport(w io.Writer, r *peel.Report) {
 	fmt.Fprintf(w, "peeling %s\n  %s\n\n", r.Artifact, r.Digest)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	layer := ""
+	counts := map[peel.Status]int{}
 	for _, res := range r.Results {
 		l := ""
 		if res.Layer != layer {
 			layer, l = res.Layer, res.Layer
 		}
+		counts[res.Status]++
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", l, res.Status, res.Check, res.Detail)
 	}
 	tw.Flush()
-	warnings := 0
-	for _, res := range r.Results {
-		if res.Status == peel.Warn {
-			warnings++
+	for _, np := range r.NotPerformed {
+		fmt.Fprintf(w, "not performed: %s\n", np)
+	}
+	var tally []string
+	for _, st := range []peel.Status{peel.Finding, peel.Failed, peel.Unsupported, peel.Degraded, peel.Passed, peel.Note} {
+		if counts[st] > 0 {
+			tally = append(tally, fmt.Sprintf("%d %s", counts[st], strings.ToLower(string(st))))
 		}
 	}
-	verdict := "VERIFIED: built as claimed"
-	if !r.OK() {
-		verdict = "NOT VERIFIED"
-	} else if warnings > 0 {
-		verdict += fmt.Sprintf(" (%d warning(s) to review)", warnings)
+	meaning := map[peel.Status]string{
+		peel.Passed:      "built as claimed; every check completed",
+		peel.Degraded:    "no violations found, but some coverage is incomplete",
+		peel.Unsupported: "no violations found, but some inputs could not be analyzed",
+		peel.Finding:     "a violation was found",
+		peel.Failed:      "trustworthy evidence could not be produced",
 	}
-	fmt.Fprintf(w, "\n%s\n", verdict)
+	fmt.Fprintf(w, "\n%s: %s (%s)\n", r.Verdict, meaning[r.Verdict], strings.Join(tally, ", "))
 }

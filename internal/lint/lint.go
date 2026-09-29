@@ -45,11 +45,20 @@ func Repo(root string, m *manifest.Manifest) error {
 // Dockerfile requires every external FROM to be pinned by digest. Stages that
 // build FROM an earlier stage name are allowed.
 func Dockerfile(p string) error {
+	_, err := BaseImages(p)
+	return err
+}
+
+// BaseImages lists the external images a Dockerfile builds FROM, in order,
+// and fails if any is not pinned by digest. Earlier stage names and scratch
+// are not external.
+func BaseImages(p string) ([]string, error) {
 	f, err := os.Open(p)
 	if err != nil {
-		return fmt.Errorf("dockerfile: %w", err)
+		return nil, fmt.Errorf("dockerfile: %w", err)
 	}
 	defer f.Close()
+	var refs []string
 	var errs []error
 	stages := map[string]bool{"scratch": true}
 	sc := bufio.NewScanner(f)
@@ -59,14 +68,18 @@ func Dockerfile(p string) error {
 			continue
 		}
 		ref := mm[1]
-		if !stages[strings.ToLower(ref)] && !manifest.IsPinnedImage(ref) {
-			errs = append(errs, fmt.Errorf("%s:%d: FROM %s is not pinned by digest", filepath.Base(p), n, ref))
+		if !stages[strings.ToLower(ref)] {
+			if manifest.IsPinnedImage(ref) {
+				refs = append(refs, ref)
+			} else {
+				errs = append(errs, fmt.Errorf("%s:%d: FROM %s is not pinned by digest", filepath.Base(p), n, ref))
+			}
 		}
 		if mm[2] != "" {
 			stages[strings.ToLower(mm[2])] = true
 		}
 	}
-	return errors.Join(append(errs, sc.Err())...)
+	return refs, errors.Join(append(errs, sc.Err())...)
 }
 
 // Workflows requires every `uses:` in the repo's workflows to be pinned to a

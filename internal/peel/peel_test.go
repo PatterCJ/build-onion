@@ -3,6 +3,7 @@ package peel
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
+	sigverify "github.com/sigstore/sigstore-go/pkg/verify"
 
 	"github.com/PatterCJ/build-onion/internal/attest"
 	"github.com/PatterCJ/build-onion/internal/digest"
@@ -43,11 +45,21 @@ func (f fakeVerifier) Verify(c attest.Candidate, d string) (*attest.Verified, er
 	return &cp, nil
 }
 
+// otherSigner stands in for bundles that verify cryptographically but were
+// signed by an identity other than the expected signer.
+type otherSigner struct{}
+
+func (otherSigner) Verify(attest.Candidate, string) (*attest.Verified, error) {
+	return nil, fmt.Errorf("failed to verify certificate identity: %w", &sigverify.ErrNoMatchingCertificateIdentity{})
+}
+
 type world struct {
 	prov map[string]any
 	inv  inventory.Inventory
 	sbom map[string]any
 	cert certificate.Summary
+	// rawInventory, if set, replaces the marshalled inventory predicate.
+	rawInventory []byte
 }
 
 func newWorld() *world {
@@ -114,6 +126,9 @@ func (w *world) input(t *testing.T) Input {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if pt == inventory.PredicateType && w.rawInventory != nil {
+			raw = w.rawInventory
+		}
 		fv[pt] = &attest.Verified{Statement: attest.Statement{PredicateType: pt, Predicate: raw}, Certificate: w.cert}
 		cands = append(cands, attest.Candidate{Source: pt})
 	}
@@ -127,83 +142,121 @@ func (w *world) input(t *testing.T) Input {
 	}
 }
 
-func failures(r *Report) []string {
+// graded lists every result that isn't Passed or Note, as "STATUS layer/check: detail".
+func graded(r *Report) []string {
 	var out []string
 	for _, res := range r.Results {
-		if res.Status == Fail {
-			out = append(out, res.Layer+"/"+res.Check+": "+res.Detail)
+		if res.Status != Passed && res.Status != Note {
+			out = append(out, string(res.Status)+" "+res.Layer+"/"+res.Check+": "+res.Detail)
 		}
 	}
 	return out
 }
 
+func lines(r *Report) string {
+	var out []string
+	for _, res := range r.Results {
+		out = append(out, string(res.Status)+" "+res.Layer+"/"+res.Check+": "+res.Detail)
+	}
+	return strings.Join(out, "\n")
+}
+
 func TestPeelHappyPath(t *testing.T) {
 	r := Run(newWorld().input(t))
-	if !r.OK() {
-		t.Fatalf("expected verified, failures: %v", failures(r))
+	if r.Verdict != Passed || r.ExitCode(false) != 0 {
+		t.Fatalf("verdict %s, graded: %v", r.Verdict, graded(r))
+	}
+	if len(r.NotPerformed) != 2 {
+		t.Errorf("not performed = %v", r.NotPerformed)
 	}
 }
 
-func TestPeelDetectsTampering(t *testing.T) {
+// Each case changes one thing and names the exact grade and check it must
+// produce, so a regression that turns a violation into missing evidence (or
+// the reverse) is caught.
+func TestPeelGrades(t *testing.T) {
 	cases := map[string]struct {
-		world func(*world)
-		input func(*Input)
-		want  string
+		world   func(*world)
+		input   func(*Input)
+		want    string // "STATUS layer/check" prefix that must appear
+		verdict Status
 	}{
 		"claimed commit differs": {
 			input: func(in *Input) { in.Claim.Commit = strings.Repeat("2", 40) },
-			want:  "provenance/source commit matches claim",
+			want:  "FINDING provenance/source commit matches claim", verdict: Finding,
 		},
 		"signed for another repo": {
 			world: func(w *world) { w.cert.SourceRepositoryURI = "https://github.com/evil/widget" },
-			want:  "signed for claimed repo",
+			want:  "FINDING seal/inventory signed for claimed repo", verdict: Finding,
 		},
 		"self-hosted runner": {
 			world: func(w *world) {
 				w.prov["buildDefinition"].(map[string]any)["internalParameters"] = map[string]any{"github": map[string]any{"runner_environment": "self-hosted"}}
 			},
-			want: "provenance/hosted runner",
+			want: "FINDING provenance/hosted runner", verdict: Finding,
 		},
 		"built by a different workflow": {
 			world: func(w *world) {
 				w.prov["runDetails"].(map[string]any)["builder"] = map[string]any{"id": "https://github.com/acme/widget/.github/workflows/release.yml@refs/heads/main"}
 			},
-			want: "provenance/builder is build-onion",
+			want: "FINDING provenance/builder is build-onion", verdict: Finding,
+		},
+		"unknown build type": {
+			world: func(w *world) { w.prov["buildDefinition"].(map[string]any)["buildType"] = "https://example.com/other" },
+			want:  "UNSUPPORTED provenance/build type", verdict: Unsupported,
 		},
 		"inventory from another run": {
 			world: func(w *world) { w.inv.Run.InvocationURL = "https://github.com/acme/widget/actions/runs/7/attempts/1" },
-			want:  "inventory/same run",
+			want:  "FINDING inventory/same run", verdict: Finding,
 		},
 		"artifact not a declared output": {
 			world: func(w *world) { w.inv.Outputs[0].Digest = digest.Bytes([]byte("other")) },
-			want:  "inventory/artifact is a declared output",
+			want:  "FINDING inventory/artifact is a declared output", verdict: Finding,
 		},
 		"build had network": {
 			world: func(w *world) { w.inv.Build.Network = "host" },
-			want:  "inventory/build ran without network",
+			want:  "FINDING inventory/build ran without network", verdict: Finding,
 		},
-		"undeclared dependency in artifact": {
+		"undeclared Go module in artifact": {
 			world: func(w *world) {
 				w.sbom["components"] = append(w.sbom["components"].([]any),
 					map[string]any{"purl": "pkg:golang/github.com/evil/backdoor@v0.0.1"})
 			},
-			want: "github.com/evil/backdoor@v0.0.1",
+			want: "FINDING dependencies/Go modules within lockfile", verdict: Finding,
 		},
 		"dependency version drift": {
 			world: func(w *world) { w.inv.Dependencies[0].Version = "v3.0.0" },
-			want:  "gopkg.in/yaml.v3@v3.0.1",
+			want:  "FINDING dependencies/Go modules within lockfile", verdict: Finding,
+		},
+		"Go module without a version": {
+			world: func(w *world) {
+				w.sbom["components"] = append(w.sbom["components"].([]any), map[string]any{"purl": "pkg:golang/github.com/some/dep"})
+			},
+			want: "DEGRADED dependencies/Go module versions", verdict: Degraded,
+		},
+		"other ecosystem": {
+			world: func(w *world) {
+				w.sbom["components"] = append(w.sbom["components"].([]any), map[string]any{"purl": "pkg:npm/left-pad@1.3.0"})
+			},
+			want: "UNSUPPORTED dependencies/other ecosystems", verdict: Unsupported,
+		},
+		"OS packages in a file output": {
+			world: func(w *world) {
+				w.sbom["components"] = append(w.sbom["components"].([]any), map[string]any{"purl": "pkg:deb/debian/base-files@12"})
+			},
+			want: "DEGRADED dependencies/OS packages from pinned base images", verdict: Degraded,
 		},
 		"gate did not allow release": {
 			world: func(w *world) { w.inv.Gate.Releasable, w.inv.Gate.Reason = false, "pull_request" },
-			want:  "gate/release allowed",
+			want:  "FINDING gate/release allowed", verdict: Finding,
 		},
 		"gate verdict missing": {
 			world: func(w *world) { w.inv.Gate = nil },
-			want:  "gate/gate verdict recorded",
+			want:  "FAILED gate/gate verdict recorded", verdict: Failed,
 		},
 		"security line missing": {
 			world: func(w *world) { w.inv.Verification = nil },
-			want:  "verification/security line recorded",
+			want:  "FAILED verification/security line recorded", verdict: Failed,
 		},
 		"independent rebuild differed": {
 			world: func(w *world) {
@@ -211,36 +264,51 @@ func TestPeelDetectsTampering(t *testing.T) {
 				m.Staged, m.Match = digest.Bytes([]byte("injected")), false
 				w.inv.Verification.Rebuild.Matched = false
 			},
-			want: "verification/independent rebuild matched",
+			want: "FINDING verification/independent rebuild matched", verdict: Finding,
 		},
 		"artifact never rebuilt": {
 			world: func(w *world) { w.inv.Verification.Rebuild.Outputs = nil },
-			want:  "artifact not among the rebuilt outputs",
+			want:  "FINDING verification/independent rebuild matched", verdict: Finding,
 		},
 		"scan of a different build": {
 			world: func(w *world) {
-				w.inv.Pipeline.Scans = []inventory.Scan{{Name: "sca", Tool: "scanner", Stage: "post-build",
+				w.inv.Pipeline.Scans = []inventory.Scan{{Name: "sca", Tool: "scanner", Stage: "post-build", Status: "completed",
 					Subject: inventory.ScanSubject{Kind: "artifact", Digest: digest.Bytes([]byte("some other build"))}}}
 			},
-			want: "scans/sca ran against this build",
+			want: "FINDING scans/sca ran against this build", verdict: Finding,
+		},
+		"scan did not complete": {
+			world: func(w *world) {
+				w.inv.Pipeline.Scans = []inventory.Scan{{Name: "sca", Tool: "scanner", Stage: "post-build", Status: "incomplete", Coverage: "2 archives could not be extracted",
+					Subject: inventory.ScanSubject{Kind: "artifact", Digest: artifactDigest}}}
+			},
+			want: "DEGRADED scans/sca completed", verdict: Degraded,
 		},
 		"unpinned action in pipeline": {
 			world: func(w *world) {
 				w.inv.Pipeline.Workflows[0].Actions = append(w.inv.Pipeline.Workflows[0].Actions, "example/scan-action@v1")
 			},
-			want: "example/scan-action@v1",
+			want: "FINDING pipeline/every action pinned", verdict: Finding,
 		},
 		"builder commit missing": {
 			world: func(w *world) { w.inv.Pipeline.BuildOnion.Commit = "" },
-			want:  "pipeline/builder commit recorded",
+			want:  "FAILED pipeline/builder commit recorded", verdict: Failed,
 		},
 		"no attestations": {
 			input: func(in *Input) { in.Candidates = nil },
-			want:  "seal/bundles verified",
+			want:  "FAILED seal/bundles found", verdict: Failed,
 		},
-		"forged bundles rejected": {
+		"bundles with invalid signatures": {
 			input: func(in *Input) { in.Verifier = fakeVerifier{} },
-			want:  "signature invalid",
+			want:  "FINDING seal/no invalid bundles", verdict: Finding,
+		},
+		"validly signed by someone else": {
+			input: func(in *Input) { in.Verifier = otherSigner{} },
+			want:  "FAILED seal/has provenance", verdict: Failed,
+		},
+		"unreadable inventory": {
+			world: func(w *world) { w.rawInventory = []byte(`{"source": 7}`) },
+			want:  "FAILED inventory/predicate parses", verdict: Failed,
 		},
 	}
 	for name, tc := range cases {
@@ -254,40 +322,91 @@ func TestPeelDetectsTampering(t *testing.T) {
 				tc.input(&in)
 			}
 			r := Run(in)
-			if r.OK() {
-				t.Fatal("tampering not detected")
+			if !strings.Contains(lines(r), tc.want) {
+				t.Fatalf("want %q in:\n%s", tc.want, lines(r))
 			}
-			if joined := strings.Join(failures(r), "\n"); !strings.Contains(joined, tc.want) {
-				t.Fatalf("want failure mentioning %q, got:\n%s", tc.want, joined)
+			if r.Verdict != tc.verdict {
+				t.Fatalf("verdict %s, want %s:\n%s", r.Verdict, tc.verdict, strings.Join(graded(r), "\n"))
 			}
 		})
+	}
+}
+
+func TestExitCodes(t *testing.T) {
+	for st, want := range map[Status]int{Passed: 0, Degraded: 3, Unsupported: 3, Finding: 4, Failed: 5} {
+		r := &Report{Verdict: st}
+		if got := r.ExitCode(false); got != want {
+			t.Errorf("%s: exit %d, want %d", st, got, want)
+		}
+	}
+	for st, want := range map[Status]int{Degraded: 0, Unsupported: 0, Finding: 4, Failed: 5} {
+		if got := (&Report{Verdict: st}).ExitCode(true); got != want {
+			t.Errorf("%s with --allow-degraded: exit %d, want %d", st, got, want)
+		}
+	}
+	// A finding outranks a failure, which outranks degraded coverage.
+	r := &Report{Results: []Result{{Status: Degraded}, {Status: Failed}, {Status: Finding}, {Status: Note}}}
+	r.finish()
+	if r.Verdict != Finding {
+		t.Errorf("verdict %s, want FINDING", r.Verdict)
+	}
+	empty := &Report{}
+	empty.finish()
+	if empty.Verdict != Failed {
+		t.Error("an empty report must not pass")
+	}
+}
+
+func TestOSPackagesFromPinnedBase(t *testing.T) {
+	imageDigest := digest.Bytes([]byte("image"))
+	w := newWorld()
+	w.inv.Outputs = append(w.inv.Outputs, inventory.Output{Kind: "oci-image", Name: "ghcr.io/acme/widget", Digest: imageDigest})
+	w.inv.Verification.Rebuild.Outputs = append(w.inv.Verification.Rebuild.Outputs,
+		verify.Match{Kind: "oci-image", Name: "ghcr.io/acme/widget", Staged: imageDigest, Rebuilt: imageDigest, Match: true})
+	w.inv.Build.Image = &inventory.ImageBuild{BaseImages: []string{"gcr.io/distroless/static@sha256:" + strings.Repeat("d", 64)}, RunNetwork: "none"}
+	w.sbom["components"] = append(w.sbom["components"].([]any),
+		map[string]any{"purl": "pkg:deb/debian/base-files@12"},
+		map[string]any{"type": "file", "name": "/etc/passwd"},
+		map[string]any{"type": "operating-system", "name": "debian"})
+	in := w.input(t)
+	in.Digest = imageDigest
+	r := Run(in)
+	if r.Verdict != Passed || !strings.Contains(lines(r), "PASSED dependencies/OS packages from pinned base images: 1 OS package(s)") {
+		t.Fatalf("verdict %s:\n%s", r.Verdict, lines(r))
+	}
+
+	// Same image, but a base that isn't pinned: the packages can't be accounted for.
+	w.inv.Build.Image.BaseImages = []string{"gcr.io/distroless/static:latest"}
+	in = w.input(t)
+	in.Digest = imageDigest
+	if r := Run(in); r.Verdict != Degraded {
+		t.Fatalf("unpinned base: verdict %s:\n%s", r.Verdict, lines(r))
 	}
 }
 
 func TestPeelRecordsScansWithoutJudging(t *testing.T) {
 	w := newWorld()
 	w.inv.Gate.SensitiveChange = []string{".github/workflows/release.yml"}
+	w.inv.Gate.ChangeKnown = false
 	w.inv.Source.Snapshot = digest.Bytes([]byte("snapshot"))
 	w.inv.Pipeline.Scans = []inventory.Scan{
-		{Name: "commit-risk", Tool: "jev", Version: "1", Stage: "pre-build", StartedAt: "2026-09-29T20:00:00Z", FinishedAt: "2026-09-29T20:00:04Z",
+		{Name: "commit-risk", Tool: "jev", Version: "1", Stage: "pre-build", Status: "completed", StartedAt: "2026-09-29T20:00:00Z", FinishedAt: "2026-09-29T20:00:04Z",
 			Subject: inventory.ScanSubject{Kind: "source", Digest: w.inv.Source.Snapshot}},
-		{Name: "sca", Tool: "blackduck", Version: "2026.7", Stage: "post-build", StartedAt: "2026-09-29T20:05:00Z", FinishedAt: "2026-09-29T20:31:00Z",
+		{Name: "sca", Tool: "blackduck", Version: "2026.7", Stage: "post-build", Status: "completed", StartedAt: "2026-09-29T20:05:00Z", FinishedAt: "2026-09-29T20:31:00Z",
 			Subject: inventory.ScanSubject{Kind: "artifact", Digest: artifactDigest}, Report: &inventory.Report{Digest: digest.Bytes([]byte("report"))}},
 	}
 	r := Run(w.input(t))
-	if !r.OK() {
-		t.Fatalf("failures: %v", failures(r))
+	if r.Verdict != Passed {
+		t.Fatalf("verdict %s: %v", r.Verdict, graded(r))
 	}
-	var lines []string
-	for _, res := range r.Results {
-		lines = append(lines, string(res.Status)+" "+res.Layer+"/"+res.Check+": "+res.Detail)
-	}
-	joined := strings.Join(lines, "\n")
+	joined := lines(r)
 	for _, want := range []string{
-		"WARN gate/build-sensitive change",
-		"PASS scans/commit-risk ran against this build: jev 1, pre-build",
-		"PASS scans/sca ran against this build: blackduck 2026.7, post-build",
+		"NOTE gate/build-sensitive change",
+		"NOTE gate/change set",
+		"PASSED scans/commit-risk ran against this build: jev 1, pre-build",
+		"PASSED scans/sca ran against this build: blackduck 2026.7, post-build",
 		"against file widget",
+		"PASSED scans/sca completed",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in:\n%s", want, joined)
@@ -335,15 +454,15 @@ func TestPeelSourceLayer(t *testing.T) {
 	in.Claim.Commit = head
 	in.SourceDir = dir
 
-	if r := Run(in); !r.OK() {
-		t.Fatalf("clean checkout failed: %v", failures(r))
+	if r := Run(in); r.Verdict != Passed {
+		t.Fatalf("clean checkout: verdict %s: %v", r.Verdict, graded(r))
 	}
 
 	// A lockfile edited after the build, even uncommitted, must not pass.
 	os.WriteFile(filepath.Join(dir, "go.sum"), []byte("gopkg.in/yaml.v3 v3.0.2 h1:y\n"), 0o644)
 	r := Run(in)
-	joined := strings.Join(failures(r), "\n")
-	for _, want := range []string{"source/checkout is clean", "source/go.sum unchanged", "source/every file matches snapshot"} {
+	joined := strings.Join(graded(r), "\n")
+	for _, want := range []string{"FINDING source/checkout is clean", "FINDING source/go.sum unchanged", "FINDING source/every file matches snapshot"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in:\n%s", want, joined)
 		}
@@ -355,14 +474,14 @@ func TestGolangPURL(t *testing.T) {
 		"pkg:golang/github.com/a/b@v1.2.3?type=module":  {"github.com/a/b", "v1.2.3"},
 		"pkg:golang/github.com/a/b%2Fv2@v2.0.0#sub/dir": {"github.com/a/b/v2", "v2.0.0"},
 		"pkg:golang/stdlib@go1.27.1":                    {"stdlib", "go1.27.1"},
+		"pkg:golang/github.com/PatterCJ/build-onion":    {"github.com/PatterCJ/build-onion", ""},
 	}
 	for in, want := range cases {
-		n, v, ok := golangPURL(in)
-		if !ok || n != want[0] || v != want[1] {
-			t.Errorf("%s => %q %q %v", in, n, v, ok)
+		if n, v := golangPURL(in); n != want[0] || v != want[1] {
+			t.Errorf("%s => %q %q", in, n, v)
 		}
 	}
-	if _, _, ok := golangPURL("pkg:deb/debian/base-files@12"); ok {
-		t.Error("non-golang purl parsed")
+	if purlType("pkg:deb/debian/base-files@12") != "deb" || purlType("nonsense") != "unknown" {
+		t.Error("purlType")
 	}
 }

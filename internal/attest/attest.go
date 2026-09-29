@@ -130,6 +130,16 @@ func (v *Verifier) Verify(c Candidate, artifactDigest string) (*Verified, error)
 	return &Verified{Statement: st, Certificate: *res.Signature.Certificate, Source: c.Source}, nil
 }
 
+// IdentityMismatch reports whether a verification error means the bundle is
+// validly signed, but by an identity other than the expected signer.
+// sigstore-go checks identity only after the signature and transparency log
+// verify, so this error implies a genuine bundle from someone else, which is
+// different from a bundle whose signature is invalid.
+func IdentityMismatch(err error) bool {
+	var e *verify.ErrNoMatchingCertificateIdentity
+	return errors.As(err, &e)
+}
+
 // Candidate is an unverified bundle and where it came from.
 type Candidate struct {
 	Bundle *bundle.Bundle

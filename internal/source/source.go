@@ -45,6 +45,13 @@ func Take(dir string) (*Snapshot, error) {
 	} else if dirty != "" {
 		return nil, fmt.Errorf("checkout has modified tracked files:\n%s", dirty)
 	}
+	return Hash(dir)
+}
+
+// Hash snapshots the tracked files exactly as they are on disk, whether or not
+// the checkout is clean. A verifier uses it to compare a checkout against a
+// signed snapshot digest: any modified file changes the digest.
+func Hash(dir string) (*Snapshot, error) {
 	commit, err := git(dir, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, err

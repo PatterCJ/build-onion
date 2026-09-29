@@ -92,7 +92,7 @@ onion peel dist/widget --repo acme/widget --signer-ref refs/tags/v0.1.0
 
 ## 5. Verify in your deploy gate
 
-`peel` exits non-zero if any layer fails, and `--json` gives a machine-readable report. Typical gate:
+`peel` exits 0 only when every check passed: 3 for degraded or unsupported coverage, 4 for a finding, 5 when evidence couldn't be produced. `--allow-degraded` accepts incomplete coverage, and `--json` gives a machine-readable report. Typical gate:
 
 ```sh
 onion peel "$IMAGE" --repo acme/widget --commit "$EXPECTED_SHA" --json > peel.json
