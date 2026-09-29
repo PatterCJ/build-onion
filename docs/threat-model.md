@@ -1,5 +1,7 @@
 # Threat model
 
+build-onion's defensible claim: it verifies declared build inputs, records what the build consumed and produced, detects violations and unexplained differences, and states plainly where its evidence stops. It doesn't claim that software is free of malicious behavior.
+
 build-onion is a claim about **where an artifact came from**. This page says precisely which attacks that claim defeats and which it doesn't, so nobody over-trusts a green `peel`.
 
 ## Trust boundary

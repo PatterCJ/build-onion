@@ -116,22 +116,6 @@ Bundles come from the GitHub attestations API, or from `--bundles DIR` for offli
 
 The `onion` CLI takes everything as flags and knows nothing about GitHub. The GitHub Actions workflows are the first integration: they supply events, refs and Sigstore signing through GitHub's attestations. The same commands (`source`, `gate`, `fetch`, `build`, `compare`, `record`, `inventory`, `peel`) are the building blocks for other CI systems and cloud build services such as AWS CodeBuild.
 
-## Roadmap
-
-build-onion's defensible claim: it verifies declared build inputs, records what the build consumed and produced, detects violations and unexplained differences, and states plainly where its evidence stops. It doesn't claim that software is free of malicious behavior.
-
-- [x] Declared manifest; pinned builder, images and actions
-- [x] Input resolution: per-file source snapshot, lockfile-verified dependencies, undeclared files fail
-- [x] Pipeline inventory: builder commit, workflows and actions, runner images and tools, scan records
-- [x] Separate build, security and publish lines; independent rebuild before signing; publish gated on `peel`
-- [x] Graded results: passed, degraded, unsupported, finding and failed, so incomplete analysis is never reported as clean
-- [x] Restricted egress: fetch's only route out is an allow-list proxy (to a public registry or your artifact store), with every connection recorded
-- [ ] **Observed build execution:** process tree, executed binaries, files touched and network connections, compared against the manifest
-- [ ] **Toolchain baseline:** protected, versioned profiles of what compilers and build tools normally do
-- [ ] **Artifact peeling:** filesystem inventory, permissions and privileged bits, entrypoints, trust-store changes
-- [ ] **Differential analysis** against the previous trusted release
-- [ ] `onion audit-repo` for insecure repository settings: branch and tag protection, token defaults, fork approval
-
 ## Development
 
 ```sh
