@@ -18,6 +18,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/inventory"
+	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/verify"
@@ -84,8 +85,8 @@ func newWorld() *world {
 			Source:       inventory.Source{Repository: repoURL, Commit: commit, Tree: "t"},
 			Builder:      inventory.Builder{Image: builderImage},
 			Lockfiles:    []inventory.FileRef{{Path: "go.sum", Digest: digest.Bytes(nil)}},
-			Dependencies: []inventory.Dependency{{Ecosystem: "go", Name: "gopkg.in/yaml.v3", Version: "v3.0.1"}},
-			MainModules:  []string{"github.com/acme/widget"},
+			Dependencies: []lockfile.Package{{Ecosystem: "golang", Name: "gopkg.in/yaml.v3", Version: "v3.0.1"}},
+			Local:        []lockfile.Local{{Ecosystem: "golang", Name: "github.com/acme/widget"}},
 			Build:        inventory.Build{Run: "go build", Network: "none"},
 			Outputs:      []inventory.Output{{Kind: "file", Name: "widget", Digest: artifactDigest}},
 			Run:          inventory.Run{InvocationURL: runURL},
@@ -232,29 +233,35 @@ func TestPeelGrades(t *testing.T) {
 				w.sbom["components"] = append(w.sbom["components"].([]any),
 					map[string]any{"purl": "pkg:golang/github.com/evil/backdoor@v0.0.1"})
 			},
-			want: "FINDING dependencies/Go modules within lockfile", verdict: Finding,
+			want: "FINDING dependencies/every package declared", verdict: Finding,
 		},
 		"dependency version drift": {
 			world: func(w *world) { w.inv.Dependencies[0].Version = "v3.0.0" },
-			want:  "FINDING dependencies/Go modules within lockfile", verdict: Finding,
+			want:  "FINDING dependencies/every package declared", verdict: Finding,
 		},
 		"Go module without a version": {
 			world: func(w *world) {
-				w.sbom["components"] = append(w.sbom["components"].([]any), map[string]any{"purl": "pkg:golang/github.com/some/dep"})
+				w.sbom["components"] = append(w.sbom["components"].([]any), map[string]any{"purl": "pkg:golang/gopkg.in/yaml.v3"})
 			},
-			want: "DEGRADED dependencies/Go module versions", verdict: Degraded,
+			want: "DEGRADED dependencies/versions", verdict: Degraded,
 		},
-		"other ecosystem": {
+		"npm package in a Go project's artifact": {
 			world: func(w *world) {
 				w.sbom["components"] = append(w.sbom["components"].([]any), map[string]any{"purl": "pkg:npm/left-pad@1.3.0"})
 			},
-			want: "UNSUPPORTED dependencies/other ecosystems", verdict: Unsupported,
+			want: "FINDING dependencies/every package declared", verdict: Finding,
+		},
+		"ecosystem without a parser": {
+			world: func(w *world) {
+				w.sbom["components"] = append(w.sbom["components"].([]any), map[string]any{"purl": "pkg:maven/org.example/lib@1.0"})
+			},
+			want: "UNSUPPORTED dependencies/coverage", verdict: Unsupported,
 		},
 		"OS packages in a file output": {
 			world: func(w *world) {
 				w.sbom["components"] = append(w.sbom["components"].([]any), map[string]any{"purl": "pkg:deb/debian/base-files@12"})
 			},
-			want: "DEGRADED dependencies/OS packages from pinned base images", verdict: Degraded,
+			want: "UNSUPPORTED dependencies/coverage", verdict: Unsupported,
 		},
 		"gate did not allow release": {
 			world: func(w *world) { w.inv.Gate.Releasable, w.inv.Gate.Reason = false, "pull_request" },
@@ -398,30 +405,69 @@ func TestExitCodes(t *testing.T) {
 	}
 }
 
-func TestOSPackagesFromPinnedBase(t *testing.T) {
+func TestImagePackagesAttributedByLayer(t *testing.T) {
 	imageDigest := digest.Bytes([]byte("image"))
-	w := newWorld()
-	w.inv.Outputs = append(w.inv.Outputs, inventory.Output{Kind: "oci-image", Name: "ghcr.io/acme/widget", Digest: imageDigest})
-	w.inv.Verification.Rebuild.Outputs = append(w.inv.Verification.Rebuild.Outputs,
-		verify.Match{Kind: "oci-image", Name: "ghcr.io/acme/widget", Staged: imageDigest, Rebuilt: imageDigest, Match: true})
-	w.inv.Build.Image = &inventory.ImageBuild{BaseImages: []string{"gcr.io/distroless/static@sha256:" + strings.Repeat("d", 64)}, RunNetwork: "none"}
-	w.sbom["components"] = append(w.sbom["components"].([]any),
-		map[string]any{"purl": "pkg:deb/debian/base-files@12"},
-		map[string]any{"type": "file", "name": "/etc/passwd"},
-		map[string]any{"type": "operating-system", "name": "debian"})
-	in := w.input(t)
-	in.Digest = imageDigest
-	r := Run(in)
-	if r.Verdict != Passed || !strings.Contains(lines(r), "PASSED dependencies/OS packages from pinned base images: 1 OS package(s)") {
+	baseLayer := "sha256:" + strings.Repeat("b", 64)
+	appLayer := "sha256:" + strings.Repeat("a", 64)
+	setup := func() (*world, func() Input) {
+		w := newWorld()
+		w.inv.Outputs = append(w.inv.Outputs, inventory.Output{Kind: "oci-image", Name: "ghcr.io/acme/widget", Digest: imageDigest})
+		w.inv.Verification.Rebuild.Outputs = append(w.inv.Verification.Rebuild.Outputs,
+			verify.Match{Kind: "oci-image", Name: "ghcr.io/acme/widget", Staged: imageDigest, Rebuilt: imageDigest, Match: true})
+		base := "gcr.io/distroless/static@sha256:" + strings.Repeat("d", 64)
+		w.inv.Build.Image = &inventory.ImageBuild{BaseImages: []string{base}, FinalBase: base, RunNetwork: "none",
+			BaseLayers: []string{baseLayer}, Layers: []string{baseLayer, appLayer}}
+		layerProp := func(l string) []any { return []any{map[string]any{"name": "syft:location:0:layerID", "value": l}} }
+		w.sbom["components"] = append(w.sbom["components"].([]any),
+			map[string]any{"purl": "pkg:deb/debian/base-files@12", "properties": layerProp(baseLayer)},
+			map[string]any{"type": "file", "name": "/etc/passwd"},
+			map[string]any{"type": "operating-system", "name": "debian"})
+		return w, func() Input { in := w.input(t); in.Digest = imageDigest; return in }
+	}
+
+	w, in := setup()
+	r := Run(in())
+	if r.Verdict != Passed || !strings.Contains(lines(r), "PASSED dependencies/deb: 1 in artifact: 1 base-image") ||
+		!strings.Contains(lines(r), "PASSED dependencies/image built on its pinned base") {
 		t.Fatalf("verdict %s:\n%s", r.Verdict, lines(r))
 	}
 
-	// Same image, but a base that isn't pinned: the packages can't be accounted for.
+	// The image doesn't start with its declared base's layers.
+	w.inv.Build.Image.Layers = []string{appLayer}
+	if r := Run(in()); r.Verdict != Finding || !strings.Contains(lines(r), "FINDING dependencies/image built on its pinned base") {
+		t.Fatalf("wrong base: verdict %s:\n%s", r.Verdict, lines(r))
+	}
+
+	// An OS package in a layer added on top of the base can't be lock-checked.
+	w, in = setup()
+	comps := w.sbom["components"].([]any)
+	comps[len(comps)-3].(map[string]any)["properties"] = []any{map[string]any{"name": "syft:location:0:layerID", "value": appLayer}}
+	if r := Run(in()); r.Verdict != Unsupported {
+		t.Fatalf("OS package outside base: verdict %s:\n%s", r.Verdict, lines(r))
+	}
+
+	// Older inventories recorded pinned bases without layers: OS packages
+	// still pass, because RUN had no network; an unpinned base doesn't.
+	w, in = setup()
+	w.inv.Build.Image.BaseLayers, w.inv.Build.Image.Layers = nil, nil
+	if r := Run(in()); r.Verdict != Passed {
+		t.Fatalf("legacy pinned: verdict %s:\n%s", r.Verdict, lines(r))
+	}
 	w.inv.Build.Image.BaseImages = []string{"gcr.io/distroless/static:latest"}
-	in = w.input(t)
-	in.Digest = imageDigest
-	if r := Run(in); r.Verdict != Degraded {
-		t.Fatalf("unpinned base: verdict %s:\n%s", r.Verdict, lines(r))
+	if r := Run(in()); r.Verdict != Unsupported {
+		t.Fatalf("legacy unpinned: verdict %s:\n%s", r.Verdict, lines(r))
+	}
+}
+
+func TestOlderInventoryShapes(t *testing.T) {
+	// Inventories written before multi-ecosystem support used ecosystem "go"
+	// and mainModules; they must still verify.
+	w := newWorld()
+	w.inv.Dependencies[0].Ecosystem = "go"
+	w.inv.Local = nil
+	w.inv.MainModules = []string{"github.com/acme/widget"}
+	if r := Run(w.input(t)); r.Verdict != Passed {
+		t.Fatalf("verdict %s: %v", r.Verdict, graded(r))
 	}
 }
 
@@ -507,22 +553,5 @@ func TestPeelSourceLayer(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in:\n%s", want, joined)
 		}
-	}
-}
-
-func TestGolangPURL(t *testing.T) {
-	cases := map[string][2]string{
-		"pkg:golang/github.com/a/b@v1.2.3?type=module":  {"github.com/a/b", "v1.2.3"},
-		"pkg:golang/github.com/a/b%2Fv2@v2.0.0#sub/dir": {"github.com/a/b/v2", "v2.0.0"},
-		"pkg:golang/stdlib@go1.27.1":                    {"stdlib", "go1.27.1"},
-		"pkg:golang/github.com/PatterCJ/build-onion":    {"github.com/PatterCJ/build-onion", ""},
-	}
-	for in, want := range cases {
-		if n, v := golangPURL(in); n != want[0] || v != want[1] {
-			t.Errorf("%s => %q %q", in, n, v)
-		}
-	}
-	if purlType("pkg:deb/debian/base-files@12") != "deb" || purlType("nonsense") != "unknown" {
-		t.Error("purlType")
 	}
 }

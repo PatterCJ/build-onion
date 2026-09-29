@@ -1,0 +1,617 @@
+{
+ "bomFormat": "CycloneDX",
+ "components": [
+  {
+   "type": "library",
+   "name": "@sindresorhus/slugify",
+   "version": "2.2.1",
+   "purl": "pkg:npm/%40sindresorhus/slugify@2.2.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/@sindresorhus/slugify/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "@sindresorhus/transliterate",
+   "version": "1.6.0",
+   "purl": "pkg:npm/%40sindresorhus/transliterate@1.6.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/@sindresorhus/transliterate/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "ansi-styles",
+   "version": "4.3.0",
+   "purl": "pkg:npm/ansi-styles@4.3.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/ansi-styles/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "async",
+   "version": "3.2.6",
+   "purl": "pkg:npm/async@3.2.6",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/async/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "basic-auth",
+   "version": "2.0.1",
+   "purl": "pkg:npm/basic-auth@2.0.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/basic-auth/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "call-bind-apply-helpers",
+   "version": "1.0.2",
+   "purl": "pkg:npm/call-bind-apply-helpers@1.0.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/call-bind-apply-helpers/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "call-bound",
+   "version": "1.0.4",
+   "purl": "pkg:npm/call-bound@1.0.4",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/call-bound/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "chalk",
+   "version": "4.1.2",
+   "purl": "pkg:npm/chalk@4.1.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/chalk/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "color-convert",
+   "version": "2.0.1",
+   "purl": "pkg:npm/color-convert@2.0.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/color-convert/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "color-name",
+   "version": "1.1.4",
+   "purl": "pkg:npm/color-name@1.1.4",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/color-name/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "corser",
+   "version": "2.0.1",
+   "purl": "pkg:npm/corser@2.0.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/corser/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "debug",
+   "version": "4.4.3",
+   "purl": "pkg:npm/debug@4.4.3",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/debug/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "dunder-proto",
+   "version": "1.0.1",
+   "purl": "pkg:npm/dunder-proto@1.0.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/dunder-proto/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "es-define-property",
+   "version": "1.0.1",
+   "purl": "pkg:npm/es-define-property@1.0.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/es-define-property/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "es-errors",
+   "version": "1.3.0",
+   "purl": "pkg:npm/es-errors@1.3.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/es-errors/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "es-object-atoms",
+   "version": "1.1.2",
+   "purl": "pkg:npm/es-object-atoms@1.1.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/es-object-atoms/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "escape-string-regexp",
+   "version": "5.0.0",
+   "purl": "pkg:npm/escape-string-regexp@5.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/escape-string-regexp/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "eventemitter3",
+   "version": "4.0.7",
+   "purl": "pkg:npm/eventemitter3@4.0.7",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/eventemitter3/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "follow-redirects",
+   "version": "1.16.0",
+   "purl": "pkg:npm/follow-redirects@1.16.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/follow-redirects/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "function-bind",
+   "version": "1.1.2",
+   "purl": "pkg:npm/function-bind@1.1.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/function-bind/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "get-intrinsic",
+   "version": "1.3.0",
+   "purl": "pkg:npm/get-intrinsic@1.3.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/get-intrinsic/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "get-proto",
+   "version": "1.0.1",
+   "purl": "pkg:npm/get-proto@1.0.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/get-proto/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "gopd",
+   "version": "1.2.0",
+   "purl": "pkg:npm/gopd@1.2.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/gopd/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "has-flag",
+   "version": "4.0.0",
+   "purl": "pkg:npm/has-flag@4.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/has-flag/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "has-symbols",
+   "version": "1.1.0",
+   "purl": "pkg:npm/has-symbols@1.1.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/has-symbols/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "hasown",
+   "version": "2.0.4",
+   "purl": "pkg:npm/hasown@2.0.4",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/hasown/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "he",
+   "version": "1.2.0",
+   "purl": "pkg:npm/he@1.2.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/he/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "html-encoding-sniffer",
+   "version": "3.0.0",
+   "purl": "pkg:npm/html-encoding-sniffer@3.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/html-encoding-sniffer/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "http-proxy",
+   "version": "1.18.1",
+   "purl": "pkg:npm/http-proxy@1.18.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/http-proxy/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "http-server",
+   "version": "14.1.1",
+   "purl": "pkg:npm/http-server@14.1.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/http-server/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "iconv-lite",
+   "version": "0.6.3",
+   "purl": "pkg:npm/iconv-lite@0.6.3",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/iconv-lite/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "math-intrinsics",
+   "version": "1.1.0",
+   "purl": "pkg:npm/math-intrinsics@1.1.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/math-intrinsics/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "mime",
+   "version": "1.6.0",
+   "purl": "pkg:npm/mime@1.6.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/mime/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "minimist",
+   "version": "1.2.8",
+   "purl": "pkg:npm/minimist@1.2.8",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/minimist/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "ms",
+   "version": "2.1.3",
+   "purl": "pkg:npm/ms@2.1.3",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/ms/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "object-inspect",
+   "version": "1.13.4",
+   "purl": "pkg:npm/object-inspect@1.13.4",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/object-inspect/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "opener",
+   "version": "1.5.2",
+   "purl": "pkg:npm/opener@1.5.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/opener/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "portfinder",
+   "version": "1.0.38",
+   "purl": "pkg:npm/portfinder@1.0.38",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/portfinder/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "qs",
+   "version": "6.16.0",
+   "purl": "pkg:npm/qs@6.16.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/qs/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "requires-port",
+   "version": "1.0.0",
+   "purl": "pkg:npm/requires-port@1.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/requires-port/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "safe-buffer",
+   "version": "5.1.2",
+   "purl": "pkg:npm/safe-buffer@5.1.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/safe-buffer/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "safer-buffer",
+   "version": "2.1.2",
+   "purl": "pkg:npm/safer-buffer@2.1.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/safer-buffer/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "secure-compare",
+   "version": "3.0.1",
+   "purl": "pkg:npm/secure-compare@3.0.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/secure-compare/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "side-channel-list",
+   "version": "1.0.1",
+   "purl": "pkg:npm/side-channel-list@1.0.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/side-channel-list/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "side-channel-map",
+   "version": "1.0.1",
+   "purl": "pkg:npm/side-channel-map@1.0.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/side-channel-map/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "side-channel-weakmap",
+   "version": "1.0.2",
+   "purl": "pkg:npm/side-channel-weakmap@1.0.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/side-channel-weakmap/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "side-channel",
+   "version": "1.1.1",
+   "purl": "pkg:npm/side-channel@1.1.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/side-channel/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "supports-color",
+   "version": "7.2.0",
+   "purl": "pkg:npm/supports-color@7.2.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/supports-color/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "union",
+   "version": "0.5.0",
+   "purl": "pkg:npm/union@0.5.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/union/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "url-join",
+   "version": "4.0.1",
+   "purl": "pkg:npm/url-join@4.0.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/url-join/package.json"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "whatwg-encoding",
+   "version": "2.0.0",
+   "purl": "pkg:npm/whatwg-encoding@2.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/whatwg-encoding/package.json"
+    }
+   ]
+  }
+ ]
+}

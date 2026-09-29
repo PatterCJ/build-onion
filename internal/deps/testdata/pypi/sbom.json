@@ -1,0 +1,353 @@
+{
+ "bomFormat": "CycloneDX",
+ "components": [
+  {
+   "type": "library",
+   "name": "autocommand",
+   "version": "2.2.2",
+   "purl": "pkg:pypi/autocommand@2.2.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/autocommand-2.2.2.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "backports-tarfile",
+   "version": "1.2.0",
+   "purl": "pkg:pypi/backports-tarfile@1.2.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/backports.tarfile-1.2.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "certifi",
+   "version": "2026.7.22",
+   "purl": "pkg:pypi/certifi@2026.7.22",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/certifi-2026.7.22.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "charset-normalizer",
+   "version": "3.5.1",
+   "purl": "pkg:pypi/charset-normalizer@3.5.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/charset_normalizer-3.5.1.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "defusedxml",
+   "version": "0.7.1",
+   "purl": "pkg:pypi/defusedxml@0.7.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/defusedxml-0.7.1.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "httpie",
+   "version": "3.2.4",
+   "purl": "pkg:pypi/httpie@3.2.4",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/httpie-3.2.4.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "idna",
+   "version": "3.20",
+   "purl": "pkg:pypi/idna@3.20",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/idna-3.20.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "importlib-metadata",
+   "version": "8.7.1",
+   "purl": "pkg:pypi/importlib-metadata@8.7.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "jaraco-context",
+   "version": "6.1.0",
+   "purl": "pkg:pypi/jaraco-context@6.1.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/jaraco_context-6.1.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "jaraco-functools",
+   "version": "4.4.0",
+   "purl": "pkg:pypi/jaraco-functools@4.4.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/jaraco_functools-4.4.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "jaraco-text",
+   "version": "4.0.0",
+   "purl": "pkg:pypi/jaraco-text@4.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/jaraco.text-4.0.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "markdown-it-py",
+   "version": "4.2.0",
+   "purl": "pkg:pypi/markdown-it-py@4.2.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/markdown_it_py-4.2.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "mdurl",
+   "version": "0.1.2",
+   "purl": "pkg:pypi/mdurl@0.1.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/mdurl-0.1.2.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "more-itertools",
+   "version": "10.8.0",
+   "purl": "pkg:pypi/more-itertools@10.8.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/more_itertools-10.8.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "multidict",
+   "version": "7.0.0",
+   "purl": "pkg:pypi/multidict@7.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/multidict-7.0.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "packaging",
+   "version": "26.0",
+   "purl": "pkg:pypi/packaging@26.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/packaging-26.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "pip",
+   "version": "26.2.1",
+   "purl": "pkg:pypi/pip@26.2.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/pip-26.2.1.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "platformdirs",
+   "version": "4.4.0",
+   "purl": "pkg:pypi/platformdirs@4.4.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/platformdirs-4.4.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "pygments",
+   "version": "2.21.0",
+   "purl": "pkg:pypi/pygments@2.21.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/pygments-2.21.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "pysocks",
+   "version": "1.7.1",
+   "purl": "pkg:pypi/pysocks@1.7.1",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/PySocks-1.7.1.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "pyyaml",
+   "version": "6.0.2",
+   "purl": "pkg:pypi/pyyaml@6.0.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/PyYAML-6.0.2.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "requests-toolbelt",
+   "version": "1.0.0",
+   "purl": "pkg:pypi/requests-toolbelt@1.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/requests_toolbelt-1.0.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "requests",
+   "version": "2.34.2",
+   "purl": "pkg:pypi/requests@2.34.2",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/requests-2.34.2.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "rich",
+   "version": "15.0.0",
+   "purl": "pkg:pypi/rich@15.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/rich-15.0.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "setuptools",
+   "version": "84.0.0",
+   "purl": "pkg:pypi/setuptools@84.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools-84.0.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "tomli",
+   "version": "2.4.0",
+   "purl": "pkg:pypi/tomli@2.4.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/tomli-2.4.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "urllib3",
+   "version": "2.8.0",
+   "purl": "pkg:pypi/urllib3@2.8.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/urllib3-2.8.0.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "wheel",
+   "version": "0.46.3",
+   "purl": "pkg:pypi/wheel@0.46.3",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/wheel-0.46.3.dist-info/METADATA"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "zipp",
+   "version": "3.23.0",
+   "purl": "pkg:pypi/zipp@3.23.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/setuptools/_vendor/zipp-3.23.0.dist-info/METADATA"
+    }
+   ]
+  }
+ ]
+}

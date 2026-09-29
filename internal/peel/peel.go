@@ -12,7 +12,6 @@ package peel
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -20,9 +19,11 @@ import (
 	"strings"
 
 	"github.com/PatterCJ/build-onion/internal/attest"
+	"github.com/PatterCJ/build-onion/internal/deps"
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/inventory"
+	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/verify"
@@ -73,6 +74,8 @@ type Report struct {
 	Results  []Result `json:"results"`
 	// NotPerformed lists optional checks the caller did not ask for.
 	NotPerformed []string `json:"notPerformed,omitempty"`
+	// Packages is every package found in the artifact and its outcome.
+	Packages []deps.Result `json:"packages,omitempty"`
 }
 
 // ExitCode is 0 for Passed, 3 for Degraded or Unsupported, 4 for Finding and
@@ -435,88 +438,122 @@ func checkPipeline(r *Report, inv *inventory.Inventory) {
 	r.check("pipeline", "jobs inventoried", len(pl.Jobs) > 0, Degraded, "%d job(s) recorded runner and tool versions", len(pl.Jobs))
 }
 
-// osPackageTypes are purl types for packages installed into an OS image.
-var osPackageTypes = map[string]bool{"deb": true, "rpm": true, "apk": true, "alpm": true}
-
-// checkDependencies accounts for every package the SBOM found in the
-// artifact. Go modules must be in the lockfile. OS packages in an image are
-// accounted for when every base image was pinned and RUN steps had no network,
-// because then they can only have come from those pinned bases. Anything else
-// is reported as unsupported rather than passed over.
+// checkDependencies proves every package in the artifact against what the
+// build declared, in any ecosystem with a lockfile parser: each package is
+// matched by name and version (and content hash where both sides carry one),
+// attributed to the pinned base image by layer, recognized as vendored inside
+// a declared package, or reported.
 func checkDependencies(r *Report, bom json.RawMessage, inv *inventory.Inventory, d string) {
-	var doc struct {
-		Components []struct {
-			Type    string `json:"type"`
-			Name    string `json:"name"`
-			Version string `json:"version"`
-			PURL    string `json:"purl"`
-		} `json:"components"`
-	}
-	if !decode(r, "dependencies", bom, &doc) {
+	present, err := deps.FromSBOM(bom)
+	if err != nil {
+		r.grade("dependencies", "SBOM readable", Failed, "%v", err)
 		return
 	}
-	locked := map[string]bool{}
-	for _, dep := range inv.Dependencies {
-		locked[strings.ToLower(dep.Name+"@"+dep.Version)] = true
-	}
-	main := map[string]bool{"stdlib": true}
-	for _, m := range inv.MainModules {
-		main[m] = true
-	}
-	var undeclared, unversioned []string
-	goCount, osCount := 0, 0
-	unsupported := map[string]int{}
-	for _, c := range doc.Components {
-		if c.PURL == "" {
-			continue // files and the OS descriptor: contents, not packages
+	declared, local := declaredFrom(inv)
+	in := deps.Input{Present: present, Declared: declared, Local: local}
+	out, _ := inv.Subject(d)
+	img := inv.Build.Image
+	isImage := out.Kind == "oci-image" && img != nil
+	if isImage {
+		in.BaseLayers = img.BaseLayers
+		if len(img.BaseLayers) > 0 {
+			r.check("dependencies", "image built on its pinned base", hasPrefix(img.Layers, img.BaseLayers), Finding,
+				"%d of %d layers are %s", len(img.BaseLayers), len(img.Layers), img.FinalBase)
 		}
-		typ := purlType(c.PURL)
-		switch {
-		case typ == "golang":
-			name, version := golangPURL(c.PURL)
-			if main[name] {
-				continue
+	}
+	rep := deps.Match(in)
+
+	// Older inventories recorded pinned bases without their layers. Their OS
+	// packages can still only have come from those bases, since RUN steps had
+	// no network.
+	legacyBase := isImage && len(img.BaseLayers) == 0 && img.RunNetwork == "none" && len(img.BaseImages) > 0 && allPinned(img.BaseImages)
+
+	type tally struct {
+		n       int
+		byKind  map[deps.Outcome]int
+		problem []string
+	}
+	per := map[string]*tally{}
+	var findings, degraded, unsupported []string
+	for i, res := range rep.Results {
+		if res.Outcome == deps.OSPackage && legacyBase {
+			rep.Results[i].Outcome, rep.Results[i].Detail = deps.BaseImage, "pinned base (layers not recorded)"
+			res = rep.Results[i]
+		}
+		t := per[res.Ecosystem]
+		if t == nil {
+			t = &tally{byKind: map[deps.Outcome]int{}}
+			per[res.Ecosystem] = t
+		}
+		t.n++
+		t.byKind[res.Outcome]++
+		id := fmt.Sprintf("%s %s@%s (%s)", res.Ecosystem, res.Name, res.Version, res.Detail)
+		switch res.Outcome {
+		case deps.Undeclared, deps.VersionDrift, deps.HashMismatch:
+			findings = append(findings, string(res.Outcome)+": "+id)
+		case deps.NoVersion:
+			degraded = append(degraded, id)
+		case deps.OSPackage, deps.NoParser:
+			unsupported = append(unsupported, id)
+		}
+	}
+	r.Packages = rep.Results
+
+	for _, eco := range sortedKeys(per) {
+		t := per[eco]
+		var parts []string
+		for _, o := range []deps.Outcome{deps.HashVerified, deps.VersionVerified, deps.Vendored, deps.BaseImage, deps.Toolchain, deps.LocalPackage} {
+			if t.byKind[o] > 0 {
+				parts = append(parts, fmt.Sprintf("%d %s", t.byKind[o], o))
 			}
-			goCount++
-			if version == "" {
-				unversioned = append(unversioned, name)
-			} else if !locked[strings.ToLower(name+"@"+version)] {
-				undeclared = append(undeclared, name+"@"+version)
-			}
-		case osPackageTypes[typ]:
-			osCount++
-		default:
-			unsupported[typ]++
+		}
+		if len(parts) > 0 {
+			r.grade("dependencies", eco, Passed, "%d in artifact: %s", t.n, strings.Join(parts, ", "))
 		}
 	}
-	sort.Strings(undeclared)
-	sort.Strings(unversioned)
-	r.check("dependencies", "Go modules within lockfile", len(undeclared) == 0, Finding,
-		"%d Go module(s) found in artifact, %d not in lockfile%s", goCount, len(undeclared), listNote(undeclared))
-	if len(unversioned) > 0 {
-		r.grade("dependencies", "Go module versions", Degraded,
-			"%d module(s) have no version in the SBOM and can't be lock-checked%s", len(unversioned), listNote(unversioned))
+	if len(per) == 0 {
+		r.grade("dependencies", "packages", Passed, "the SBOM lists no packages")
 	}
-	if osCount > 0 {
-		out, _ := inv.Subject(d)
-		img := inv.Build.Image
-		switch {
-		case out.Kind == "oci-image" && img != nil && img.RunNetwork == "none" && len(img.BaseImages) > 0 && allPinned(img.BaseImages):
-			r.grade("dependencies", "OS packages from pinned base images", Passed,
-				"%d OS package(s); every base is pinned (%s) and RUN steps had no network", osCount, strings.Join(img.BaseImages, ", "))
-		default:
-			r.grade("dependencies", "OS packages from pinned base images", Degraded,
-				"%d OS package(s) whose origin the inventory can't account for", osCount)
-		}
+	r.check("dependencies", "every package declared", len(findings) == 0, Finding, "%d violation(s)%s", len(findings), listNote(findings))
+	if len(degraded) > 0 {
+		r.grade("dependencies", "versions", Degraded, "%d package(s) have no version in the SBOM%s", len(degraded), listNote(degraded))
 	}
 	if len(unsupported) > 0 {
-		var kinds []string
-		for _, t := range sortedKeys(unsupported) {
-			kinds = append(kinds, fmt.Sprintf("%s ×%d", t, unsupported[t]))
-		}
-		r.grade("dependencies", "other ecosystems", Unsupported,
-			"lock-checking %s is not supported yet", strings.Join(kinds, ", "))
+		r.grade("dependencies", "coverage", Unsupported, "%d package(s) can't be checked against a lockfile%s", len(unsupported), listNote(unsupported))
 	}
+	for _, eco := range sortedKeys(rep.NotShipped) {
+		r.grade("dependencies", eco+" declared, not shipped", Note, "%d declared package(s) (plus %d dev) aren't in this artifact",
+			rep.NotShipped[eco], rep.NotShippedDev[eco])
+	}
+}
+
+// declaredFrom reads the declared side, including the shapes older
+// inventories wrote (ecosystem "go", mainModules).
+func declaredFrom(inv *inventory.Inventory) ([]lockfile.Package, []lockfile.Local) {
+	declared := make([]lockfile.Package, len(inv.Dependencies))
+	for i, d := range inv.Dependencies {
+		if d.Ecosystem == "go" {
+			d.Ecosystem = "golang"
+		}
+		declared[i] = d
+	}
+	local := append([]lockfile.Local{}, inv.Local...)
+	for _, m := range inv.MainModules {
+		local = append(local, lockfile.Local{Ecosystem: "golang", Name: m})
+	}
+	return declared, local
+}
+
+func hasPrefix(all, prefix []string) bool {
+	if len(prefix) > len(all) {
+		return false
+	}
+	for i := range prefix {
+		if all[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func allPinned(refs []string) bool {
@@ -526,33 +563,6 @@ func allPinned(refs []string) bool {
 		}
 	}
 	return true
-}
-
-func purlType(p string) string {
-	rest, ok := strings.CutPrefix(p, "pkg:")
-	if !ok {
-		return "unknown"
-	}
-	t, _, _ := strings.Cut(rest, "/")
-	return strings.ToLower(t)
-}
-
-// golangPURL parses pkg:golang/<module>[@<version>][?qualifiers][#subpath].
-// The version is empty when absent (syft records the main module this way).
-func golangPURL(p string) (name, version string) {
-	rest := strings.TrimPrefix(p, "pkg:golang/")
-	rest, _, _ = strings.Cut(rest, "?")
-	rest, _, _ = strings.Cut(rest, "#")
-	if i := strings.LastIndex(rest, "@"); i >= 0 {
-		rest, version = rest[:i], rest[i+1:]
-	}
-	if n, err := url.PathUnescape(rest); err == nil {
-		rest = n
-	}
-	if v, err := url.PathUnescape(version); err == nil {
-		version = v
-	}
-	return rest, version
 }
 
 func checkSource(r *Report, dir string, inv *inventory.Inventory) {

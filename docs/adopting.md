@@ -7,7 +7,7 @@ The manifest is the whole contract. Anything not declared is not available to th
 | Field | Rule |
 |---|---|
 | `builder.image` | Pinned by digest. Every fetch and build step runs in it. |
-| `dependencies.lockfiles` | Hashed into the inventory. `go.sum` is also parsed for the dependency cross-check. |
+| `dependencies.lockfiles` | Hashed into the inventory, and parsed so `peel` can prove every package in the artifact against them. Supported: `go.sum`, `package-lock.json` / `npm-shrinkwrap.json`, `requirements*.txt` (pinned with `==`), `uv.lock`, `poetry.lock`, `Cargo.lock`. Other lockfiles are still hashed, and packages from them grade UNSUPPORTED. |
 | `dependencies.fetch` / `cache` | `fetch` must populate `cache` (a path inside the builder). The cache is then the only third-party input the build sees. |
 | `dependencies.egress` | The only hosts `fetch` may reach, each with an optional `port` (default 443) and `private: true` if it lives on a private network. See [Restricting fetch](#restricting-fetch). Without it, fetch has unrestricted network and `peel` reports that as DEGRADED. |
 | `dependencies.env` | Environment for `fetch` only, typically pointing a package manager at your artifact store. |
@@ -80,6 +80,28 @@ With an internal artifact store, point the package manager at it and allow only 
 The allow-list works on host names. It doesn't intercept TLS, so it can't tell apart paths or tenants on a shared host like `storage.googleapis.com`. An artifact store you control gives the tightest boundary.
 
 To find out what a tool needs, run the fetch with a minimal list. The failure message names each denied host.
+
+### How packages are proven
+
+`peel` compares two independent readings of the build:
+
+- **Declared:** build-onion's own parser reads each lockfile at the exact commit.
+- **Present:** syft reports what is actually installed or linked inside the artifact.
+
+Every package in the artifact gets one outcome:
+
+| Outcome | Meaning | Grade |
+|---|---|---|
+| hash-verified | Declared, same version, same content hash. Go binaries carry each module's `h1:` hash; Rust binaries built with `cargo auditable` carry the crate list. | PASSED |
+| version-verified | Declared, same version, no comparable hash. npm and Python lockfiles hash downloaded archives, not installed files; those archives were verified against the lockfile during the restricted fetch. | PASSED |
+| base-image | Found in a layer of the pinned base image. The inventory proves the image starts with exactly those layers. | PASSED |
+| vendored | A copy bundled inside a declared package (such as `setuptools/_vendor/…`). | PASSED |
+| undeclared / version-drift / hash-mismatch | In the artifact but not declared, at a different version, or with different content. | FINDING |
+| OS package outside the base, or an ecosystem without a parser | Can't be checked against a lockfile. | UNSUPPORTED |
+
+Packages declared but not shipped (tests, tooling, other platforms) are counted as a note.
+
+To add an ecosystem, add one parser file to `internal/lockfile` and a real fixture to `internal/deps/testdata/generate.sh`.
 
 ## 2. Make it reproducible
 

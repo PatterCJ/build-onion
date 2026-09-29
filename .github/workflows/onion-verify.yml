@@ -219,7 +219,9 @@ jobs:
           mkdir -p /tmp/onion-sbom "$ONION_REC"
           # Record exactly which bytes were scanned; seal checks them against its own copy.
           (cd "$out" && find . -type f | LC_ALL=C sort | xargs sha256sum) > /tmp/onion-sbom/scanned.sha256
-          "$SYFT" scan "dir:$out/files" -o "cyclonedx-json=/tmp/onion-sbom/files.cdx.json"
+          # Built outputs are scanned like an image: what is installed or linked
+          # inside them, not what a manifest lying next to them declares.
+          "$SYFT" scan "dir:$out/files" --override-default-catalogers image -o "cyclonedx-json=/tmp/onion-sbom/files.cdx.json"
           if [ -f "$out/image.tar" ]; then
             "$SYFT" scan "oci-archive:$out/image.tar" -o "cyclonedx-json=/tmp/onion-sbom/image.cdx.json"
           fi

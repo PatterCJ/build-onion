@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"archive/tar"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,8 +94,11 @@ func TestGenerate(t *testing.T) {
 	if inv.Source.Snapshot != snap.Digest || inv.Source.Files != 3 {
 		t.Errorf("source = %+v", inv.Source)
 	}
-	if len(inv.MainModules) != 1 || inv.MainModules[0] != "github.com/acme/widget" {
-		t.Errorf("main modules = %v", inv.MainModules)
+	if len(inv.Local) != 1 || inv.Local[0].Name != "github.com/acme/widget" || inv.Local[0].Ecosystem != "golang" {
+		t.Errorf("local = %+v", inv.Local)
+	}
+	if inv.Lockfiles[0].Ecosystem != "golang" || inv.Dependencies[0].Ecosystem != "golang" {
+		t.Errorf("ecosystem not recorded: %+v %+v", inv.Lockfiles[0], inv.Dependencies[0])
 	}
 }
 
@@ -290,5 +294,62 @@ func TestScansMustBeAboutThisBuild(t *testing.T) {
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: err = %v", tc.name, err)
 		}
+	}
+}
+
+func TestGenerateImageLayers(t *testing.T) {
+	src, snap := gitSource(t)
+	pin := "@sha256:" + strings.Repeat("d", 64)
+	base := "gcr.io/distroless/static" + pin
+	os.WriteFile(filepath.Join(src, "build-onion.yml"), []byte(manifestYAML+"  image:\n    name: ghcr.io/acme/widget\n    dockerfile: Dockerfile\n"), 0o644)
+	os.WriteFile(filepath.Join(src, "Dockerfile"), []byte("FROM golang:1.27"+pin+" AS build\nFROM "+base+"\nCOPY dist/widget /widget\n"), 0o644)
+	for _, args := range [][]string{{"add", "."}, {"commit", "-qm", "image"}} {
+		exec.Command("git", append([]string{"-C", src, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...).Run()
+	}
+	snap, err := source.Take(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := t.TempDir()
+	os.WriteFile(filepath.Join(files, "widget"), []byte("binary"), 0o755)
+
+	baseLayer, appLayer := "sha256:"+strings.Repeat("1", 64), "sha256:"+strings.Repeat("2", 64)
+	archive := func(layers ...string) string {
+		config := `{"rootfs":{"type":"layers","diff_ids":["` + strings.Join(layers, `","`) + `"]}}`
+		manifest := `{"config":{"digest":"` + digest.Bytes([]byte(config)) + `"}}`
+		p := filepath.Join(t.TempDir(), "image.tar")
+		f, _ := os.Create(p)
+		tw := tar.NewWriter(f)
+		for name, body := range map[string]string{
+			"index.json": `{"manifests":[{"digest":"` + digest.Bytes([]byte(manifest)) + `"}]}`,
+			"blobs/sha256/" + digest.Hex(digest.Bytes([]byte(manifest))): manifest,
+			"blobs/sha256/" + digest.Hex(digest.Bytes([]byte(config))):   config,
+		} {
+			tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body))})
+			tw.Write([]byte(body))
+		}
+		tw.Close()
+		f.Close()
+		return p
+	}
+	resolved := ""
+	params := func(img string) Params {
+		p := params(src, snap, files)
+		p.ImageArchive = img
+		p.ResolveBase = func(ref string) ([]string, error) { resolved = ref; return []string{baseLayer}, nil }
+		return p
+	}
+
+	inv, _, err := Generate(params(archive(baseLayer, appLayer)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ib := inv.Build.Image
+	if resolved != base || ib.FinalBase != base || len(ib.BaseLayers) != 1 || len(ib.Layers) != 2 {
+		t.Fatalf("image build = %+v (resolved %q)", ib, resolved)
+	}
+	// An image that doesn't start with its base's layers wasn't built FROM it.
+	if _, _, err := Generate(params(archive(appLayer))); err == nil || !strings.Contains(err.Error(), "does not start with the layers") {
+		t.Fatalf("wrong base accepted: %v", err)
 	}
 }

@@ -1,0 +1,101 @@
+{
+ "bomFormat": "CycloneDX",
+ "components": [
+  {
+   "type": "library",
+   "name": "anyhow",
+   "version": "1.0.89",
+   "purl": "pkg:cargo/anyhow@1.0.89",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/onion-cargo-fixture"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "itoa",
+   "version": "1.0.18",
+   "purl": "pkg:cargo/itoa@1.0.18",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/onion-cargo-fixture"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "memchr",
+   "version": "2.8.3",
+   "purl": "pkg:cargo/memchr@2.8.3",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/onion-cargo-fixture"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "onion-cargo-fixture",
+   "version": "1.0.0",
+   "purl": "pkg:cargo/onion-cargo-fixture@1.0.0",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/onion-cargo-fixture"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "ryu",
+   "version": "1.0.23",
+   "purl": "pkg:cargo/ryu@1.0.23",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/onion-cargo-fixture"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "serde",
+   "version": "1.0.229",
+   "purl": "pkg:cargo/serde@1.0.229",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/onion-cargo-fixture"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "serde_core",
+   "version": "1.0.229",
+   "purl": "pkg:cargo/serde_core@1.0.229",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/onion-cargo-fixture"
+    }
+   ]
+  },
+  {
+   "type": "library",
+   "name": "serde_json",
+   "version": "1.0.128",
+   "purl": "pkg:cargo/serde_json@1.0.128",
+   "properties": [
+    {
+     "name": "syft:location:0:path",
+     "value": "/onion-cargo-fixture"
+    }
+   ]
+  }
+ ]
+}

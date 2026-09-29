@@ -5,18 +5,16 @@
 package inventory
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/lint"
+	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/verify"
@@ -25,12 +23,14 @@ import (
 const PredicateType = "https://github.com/PatterCJ/build-onion/inventory/v1"
 
 type Inventory struct {
-	Manifest     FileRef      `json:"manifest"`
-	Source       Source       `json:"source"`
-	Builder      Builder      `json:"builder"`
-	Lockfiles    []FileRef    `json:"lockfiles"`
-	Dependencies []Dependency `json:"dependencies"`
-	// MainModules are the modules built from this source (not dependencies).
+	Manifest     FileRef            `json:"manifest"`
+	Source       Source             `json:"source"`
+	Builder      Builder            `json:"builder"`
+	Lockfiles    []FileRef          `json:"lockfiles"`
+	Dependencies []lockfile.Package `json:"dependencies"`
+	// Local are packages built from this source rather than fetched.
+	Local []lockfile.Local `json:"local,omitempty"`
+	// MainModules is the pre-Local form, read from older inventories only.
 	MainModules []string `json:"mainModules,omitempty"`
 	Build       Build    `json:"build"`
 	Outputs     []Output `json:"outputs"`
@@ -53,6 +53,9 @@ type Verification struct {
 type FileRef struct {
 	Path   string `json:"path"`
 	Digest string `json:"digest"`
+	// Ecosystem is set on lockfiles build-onion can read; empty means the
+	// lockfile is hashed but its packages can't be cross-checked.
+	Ecosystem string `json:"ecosystem,omitempty"`
 }
 
 type Source struct {
@@ -67,13 +70,6 @@ type Source struct {
 
 type Builder struct {
 	Image string `json:"image"`
-}
-
-type Dependency struct {
-	Ecosystem string `json:"ecosystem"`
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	Hash      string `json:"hash,omitempty"`
 }
 
 type Build struct {
@@ -91,6 +87,13 @@ type ImageBuild struct {
 	Dockerfile FileRef  `json:"dockerfile"`
 	BaseImages []string `json:"baseImages"`
 	RunNetwork string   `json:"runNetwork"`
+	// FinalBase is the pinned image the final stage builds on ("" for scratch).
+	FinalBase string `json:"finalBase"`
+	// BaseLayers are FinalBase's layer diffIDs, and Layers the built image's.
+	// The image must start with its base's layers; a package in one of those
+	// layers came from the pinned base.
+	BaseLayers []string `json:"baseLayers"`
+	Layers     []string `json:"layers"`
 }
 
 type Output struct {
@@ -122,6 +125,8 @@ type Params struct {
 	// Egress is the fetch network record from the fetch whose cache produced
 	// these outputs. Required when the manifest declares an allow-list.
 	Egress *egress.Record
+	// ResolveBase returns a pinned image's layer diffIDs (linux/amd64).
+	ResolveBase func(ref string) ([]string, error)
 }
 
 // Generate builds the inventory. It hashes everything itself; it never trusts
@@ -178,19 +183,23 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("lockfile: %w", err)
 		}
-		inv.Lockfiles = append(inv.Lockfiles, FileRef{Path: l, Digest: d})
-		if filepath.Base(l) == "go.sum" {
-			deps, err := ParseGoSum(filepath.Join(p.SourceDir, l))
-			if err != nil {
-				return nil, nil, err
-			}
-			inv.Dependencies = append(inv.Dependencies, deps...)
-			mod, err := GoModulePath(filepath.Join(p.SourceDir, filepath.Dir(l), "go.mod"))
-			if err != nil {
-				return nil, nil, err
-			}
-			inv.MainModules = append(inv.MainModules, mod)
+		ref := FileRef{Path: l, Digest: d}
+		full := filepath.Join(p.SourceDir, l)
+		data, err := os.ReadFile(full)
+		if err != nil {
+			return nil, nil, err
 		}
+		sibling := func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(filepath.Dir(full), name)) }
+		res, ok, err := lockfile.Parse(l, data, sibling)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok {
+			ref.Ecosystem = lockfile.Ecosystem(l)
+			inv.Dependencies = append(inv.Dependencies, res.Packages...)
+			inv.Local = append(inv.Local, res.Local...)
+		}
+		inv.Lockfiles = append(inv.Lockfiles, ref)
 	}
 	for _, f := range m.Outputs.Files {
 		name := filepath.Base(f)
@@ -210,10 +219,9 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		inv.Build.Image = &ImageBuild{
-			Dockerfile: FileRef{Path: img.Dockerfile, Digest: dfDigest},
-			BaseImages: bases,
-			RunNetwork: "none",
+		final, err := lint.FinalBase(dfPath)
+		if err != nil {
+			return nil, nil, err
 		}
 		if p.ImageArchive == "" {
 			return nil, nil, errors.New("manifest declares an image but no image archive was given")
@@ -221,6 +229,32 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		d, err := digest.OCIArchive(p.ImageArchive)
 		if err != nil {
 			return nil, nil, err
+		}
+		layers, err := digest.OCILayers(p.ImageArchive)
+		if err != nil {
+			return nil, nil, err
+		}
+		var baseLayers []string
+		if final != "" {
+			if p.ResolveBase == nil {
+				return nil, nil, errors.New("image builds on a base image, but no way to resolve its layers was given")
+			}
+			if baseLayers, err = p.ResolveBase(final); err != nil {
+				return nil, nil, fmt.Errorf("resolve base %s: %w", final, err)
+			}
+		}
+		// The image must be its base's layers plus its own, in that order:
+		// proof it was built FROM the pinned base and nothing else.
+		if len(layers) < len(baseLayers) || !equalStrings(layers[:len(baseLayers)], baseLayers) {
+			return nil, nil, fmt.Errorf("image does not start with the layers of its declared base %s", final)
+		}
+		inv.Build.Image = &ImageBuild{
+			Dockerfile: FileRef{Path: img.Dockerfile, Digest: dfDigest},
+			BaseImages: bases,
+			RunNetwork: "none",
+			FinalBase:  final,
+			BaseLayers: baseLayers,
+			Layers:     layers,
 		}
 		inv.Outputs = append(inv.Outputs, Output{Kind: "oci-image", Name: img.Name, Digest: d})
 	}
@@ -273,49 +307,16 @@ func checkSnapshot(p Params) error {
 	return nil
 }
 
-// ParseGoSum lists every module version whose content (not just go.mod) is
-// locked. A module linked into a binary must appear here.
-func ParseGoSum(p string) ([]Dependency, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return nil, err
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	defer f.Close()
-	var deps []Dependency
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) != 3 || strings.HasSuffix(fields[1], "/go.mod") {
-			continue
-		}
-		deps = append(deps, Dependency{Ecosystem: "go", Name: fields[0], Version: fields[1], Hash: fields[2]})
-	}
-	sort.Slice(deps, func(i, j int) bool {
-		if deps[i].Name != deps[j].Name {
-			return deps[i].Name < deps[j].Name
-		}
-		return deps[i].Version < deps[j].Version
-	})
-	return deps, sc.Err()
-}
-
-// GoModulePath reads the module directive from a go.mod file.
-func GoModulePath(p string) (string, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if fields := strings.Fields(sc.Text()); len(fields) == 2 && fields[0] == "module" {
-			return strings.Trim(fields[1], `"`), nil
+	for i := range a {
+		if a[i] != b[i] {
+			return false
 		}
 	}
-	if err := sc.Err(); err != nil {
-		return "", err
-	}
-	return "", fmt.Errorf("%s: no module directive", p)
+	return true
 }
 
 // Subject returns the output with the given digest, if the inventory has one.

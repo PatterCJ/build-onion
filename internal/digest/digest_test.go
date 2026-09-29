@@ -55,3 +55,28 @@ func TestFile(t *testing.T) {
 		t.Fatalf("got %q, %v", got, err)
 	}
 }
+
+func TestOCILayers(t *testing.T) {
+	config := `{"rootfs":{"type":"layers","diff_ids":["sha256:` + strings.Repeat("1", 64) + `","sha256:` + strings.Repeat("2", 64) + `"]}}`
+	configD := Bytes([]byte(config))
+	manifest := `{"config":{"digest":"` + configD + `"}}`
+	manifestD := Bytes([]byte(manifest))
+	p := writeTar(t, map[string]string{
+		"index.json":                     `{"manifests":[{"digest":"` + manifestD + `"}]}`,
+		"blobs/sha256/" + Hex(manifestD): manifest,
+		"blobs/sha256/" + Hex(configD):   config,
+	})
+	got, err := OCILayers(p)
+	if err != nil || len(got) != 2 || !strings.HasSuffix(got[1], "2222") {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	// A config whose bytes don't match its digest is refused.
+	bad := writeTar(t, map[string]string{
+		"index.json":                     `{"manifests":[{"digest":"` + manifestD + `"}]}`,
+		"blobs/sha256/" + Hex(manifestD): manifest,
+		"blobs/sha256/" + Hex(configD):   config + " ",
+	})
+	if _, err := OCILayers(bad); err == nil {
+		t.Fatal("tampered config accepted")
+	}
+}

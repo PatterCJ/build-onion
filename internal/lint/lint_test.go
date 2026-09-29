@@ -63,3 +63,20 @@ func TestWorkflowsMissingDirIsFine(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFinalBase(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "Dockerfile")
+	cases := map[string]string{
+		"FROM golang:1.27" + pin + " AS build\nRUN go build\nFROM gcr.io/distroless/static" + pin + "\nCOPY --from=build /app /app\n": "gcr.io/distroless/static" + pin,
+		"FROM alpine" + pin + " AS base\nFROM base AS final\n":                                                                        "alpine" + pin,
+		"FROM golang:1.27" + pin + " AS build\nFROM scratch\n":                                                                        "",
+	}
+	for body, want := range cases {
+		write(t, p, body)
+		got, err := FinalBase(p)
+		if err != nil || got != want {
+			t.Errorf("%q => %q, %v; want %q", body, got, err, want)
+		}
+	}
+}

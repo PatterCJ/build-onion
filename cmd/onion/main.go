@@ -14,9 +14,11 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/PatterCJ/build-onion/internal/attest"
@@ -26,6 +28,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/lint"
+	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/peel"
 	"github.com/PatterCJ/build-onion/internal/verify"
@@ -49,7 +52,7 @@ Usage:
   onion compare   --staged DIR --rebuilt DIR [--out FILE]
   onion digest    [--oci] PATH...
   onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
-  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--json]
+  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
   onion version
 `
 
@@ -126,6 +129,14 @@ func cmdValidate(args []string) error {
 	}
 	fmt.Printf("manifest %s ok: builder %s, %d lockfile(s), %d output file(s), image=%t\n",
 		m.Name, m.Builder.Image, len(m.Dependencies.Lockfiles), len(m.Outputs.Files), m.Outputs.Image != nil)
+	for _, l := range m.Dependencies.Lockfiles {
+		if eco := lockfile.Ecosystem(l); eco != "" {
+			fmt.Printf("  lockfile %s: %s packages will be proven against the artifact\n", l, eco)
+		} else {
+			fmt.Printf("  lockfile %s: hashed, but no parser; packages from it will grade UNSUPPORTED (supported: %s)\n",
+				l, strings.Join(lockfile.Supported(), ", "))
+		}
+	}
 	return nil
 }
 
@@ -306,6 +317,7 @@ func cmdInventory(args []string) error {
 			return err
 		}
 	}
+	p.ResolveBase = resolveBaseLayers
 	inv, _, err := inventory.Generate(p)
 	if err != nil {
 		return err
@@ -327,6 +339,7 @@ func cmdPeel(args []string) error {
 	rebuild := fs.Bool("rebuild", false, "rebuild from --source and compare digests (needs docker)")
 	asJSON := fs.Bool("json", false, "print the report as JSON")
 	allowDegraded := fs.Bool("allow-degraded", false, "exit 0 when the verdict is DEGRADED or UNSUPPORTED")
+	packages := fs.Bool("packages", false, "list every package found in the artifact and its outcome")
 	oci := fs.Bool("oci", false, "ARTIFACT is an OCI image-layout tarball; verify its image digest")
 	artifact, rest := splitPositional(args)
 	fs.Parse(rest)
@@ -382,6 +395,9 @@ func cmdPeel(args []string) error {
 		}
 	} else {
 		printReport(os.Stdout, rep)
+		if *packages {
+			printPackages(os.Stdout, rep)
+		}
 	}
 	if code := rep.ExitCode(*allowDegraded); code != 0 {
 		return exitCode(code)
@@ -395,6 +411,36 @@ func splitPositional(args []string) (string, []string) {
 		return args[0], args[1:]
 	}
 	return "", args
+}
+
+// resolveBaseLayers fetches a pinned base image's config for the platform the
+// pipeline builds (linux/amd64) and returns its layer diffIDs. The reference
+// is a digest, and go-containerregistry verifies every blob it reads.
+func resolveBaseLayers(ref string) ([]string, error) {
+	r, err := name.ParseReference(ref, name.StrictValidation)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := r.(name.Digest); !ok {
+		return nil, fmt.Errorf("%s is not pinned by digest", ref)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	img, err := remote.Image(r, remote.WithContext(ctx),
+		remote.WithPlatform(v1.Platform{OS: "linux", Architecture: "amd64"}),
+		remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(cfg.RootFS.DiffIDs))
+	for i, d := range cfg.RootFS.DiffIDs {
+		out[i] = d.String()
+	}
+	return out, nil
 }
 
 // resolveDigest hashes a local file, or resolves an image reference to its
@@ -415,6 +461,16 @@ func resolveDigest(artifact string) (string, error) {
 		return "", fmt.Errorf("resolve %s: %w", artifact, err)
 	}
 	return desc.Digest.String(), nil
+}
+
+func printPackages(w io.Writer, r *peel.Report) {
+	fmt.Fprintf(w, "\npackages in %s (%d)\n", r.Artifact, len(r.Packages))
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ECOSYSTEM\tPACKAGE\tVERSION\tOUTCOME\tDETAIL")
+	for _, p := range r.Packages {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.Ecosystem, p.Name, p.Version, p.Outcome, p.Detail)
+	}
+	tw.Flush()
 }
 
 func printReport(w io.Writer, r *peel.Report) {

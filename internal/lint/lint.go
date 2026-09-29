@@ -127,3 +127,37 @@ func workflowFile(p string) error {
 	}
 	return errors.Join(append(errs, sc.Err())...)
 }
+
+// FinalBase returns the external image the Dockerfile's final stage builds
+// on, following stage names back to their origin; "" for scratch.
+func FinalBase(p string) (string, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return "", fmt.Errorf("dockerfile: %w", err)
+	}
+	defer f.Close()
+	origin := map[string]string{"scratch": ""} // stage name → external image
+	final, seen := "", false
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		mm := fromRe.FindStringSubmatch(sc.Text())
+		if mm == nil {
+			continue
+		}
+		ref := mm[1]
+		if o, ok := origin[strings.ToLower(ref)]; ok {
+			ref = o
+		}
+		if mm[2] != "" {
+			origin[strings.ToLower(mm[2])] = ref
+		}
+		final, seen = ref, true
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	if !seen {
+		return "", fmt.Errorf("%s: no FROM", filepath.Base(p))
+	}
+	return final, nil
+}

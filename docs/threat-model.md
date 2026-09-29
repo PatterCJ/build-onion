@@ -26,7 +26,9 @@ build-onion is a claim about **where an artifact came from**. This page says pre
 | Fetch reaches an undeclared host (a malicious install script calling home, a dependency confusion download) | With `dependencies.egress`, fetch's only route out is the egress proxy. Any undeclared host fails the fetch, and every connection is recorded in the sealed inventory. |
 | Fetch reaching cloud metadata or the runner itself | Loopback, link-local (169.254.169.254) and multicast are never reachable. Private ranges need an explicit `private: true`. The proxy resolves names itself and connects to the address it checked. |
 | Mutable references repointed (tags, `latest`) | Builder image, `FROM` lines, and actions must be pinned by digest/SHA or `validate` fails. |
-| A dependency linked into the artifact that the lockfile never declared | **dependencies** layer: SBOM of the artifact ⊆ lockfile. |
+| A dependency linked into the artifact that the lockfile never declared | **dependencies** layer: every package the SBOM finds in the artifact must be declared, in any supported ecosystem. Declared and present sides come from two independent implementations (build-onion's parsers and syft), so one tool's mistake can't hide itself. |
+| A dependency swapped for different content at the same version | For Go, the module hash compiled into the binary must equal the lockfile's `h1:` hash. |
+| An image not actually built from its declared base | The inventory records the pinned base's layers, and the built image must start with exactly those layers. |
 | Provenance, SBOM, and inventory stitched together from different runs | **seal** layer requires one run invocation behind all three; inventory must name the same run as provenance. |
 | Source tampered after release (lockfile edited, commit rewritten) | **source** layer recomputes tree hash and file digests from a checkout. |
 | A source file swapped on the build machine and left that way | Every tracked file is sha256-hashed before the build and re-verified before and after fetch and build. Git's index and stat cache aren't consulted, so they can't be used to hide the change. |
@@ -49,5 +51,6 @@ build-onion is a claim about **where an artifact came from**. This page says pre
 - **Malicious code at the commit.** If the commit itself contains a backdoor, build-onion faithfully proves the backdoor was built from that commit. Provenance is not code review — pair it with review and scanning.
 - **A compromised dependency that *is* in the lockfile.** Lockfiles pin bytes, not intent. The fetch step runs `go mod verify` against `go.sum`, but a malicious version you locked is still malicious.
 - **Compromised GitHub, Sigstore, or build-onion itself.** These are the trust root. Pin build-onion by commit and review updates.
-- **Non-Go dependency checks.** The SBOM-within-lockfile check covers Go modules today. Other ecosystems still get lockfile hashing, a signed SBOM, and hermetic builds, but not the cross-check. OS packages in a pinned base image are reported but not lock-checked.
+- **Content hashes outside Go.** For npm and Python, lockfiles hash downloaded archives while artifacts hold installed files, so matching is by name and version. The archives themselves were verified against the lockfile hashes during the restricted fetch.
+- **Ecosystems without a parser** (Maven, Yarn, pnpm, and others) grade UNSUPPORTED. Their lockfiles are still hashed into the inventory.
 - **Private repositories.** GitHub signs attestations for private repos with its own Sigstore instance; pass that trust root with `peel --trusted-root`.

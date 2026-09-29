@@ -78,3 +78,67 @@ func OCIArchive(p string) (string, error) {
 		return "", fmt.Errorf("%s: invalid manifest digest", p)
 	}
 }
+
+// OCILayers returns the diffIDs (uncompressed layer digests, bottom first)
+// from the image config inside an OCI layout tarball with a single manifest.
+func OCILayers(p string) ([]string, error) {
+	manifestDigest, err := OCIArchive(p)
+	if err != nil {
+		return nil, err
+	}
+	blob := func(d string) ([]byte, error) {
+		f, err := os.Open(p)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		want := "blobs/sha256/" + Hex(d)
+		tr := tar.NewReader(f)
+		for {
+			h, err := tr.Next()
+			if errors.Is(err, io.EOF) {
+				return nil, fmt.Errorf("%s: blob %s not in archive", p, d)
+			} else if err != nil {
+				return nil, err
+			}
+			if strings.TrimPrefix(h.Name, "./") == want {
+				if h.Size > 4<<20 {
+					return nil, fmt.Errorf("%s: blob %s too large for a manifest or config", p, d)
+				}
+				b, err := io.ReadAll(tr)
+				if err != nil {
+					return nil, err
+				}
+				if Bytes(b) != d {
+					return nil, fmt.Errorf("%s: blob %s does not match its digest", p, d)
+				}
+				return b, nil
+			}
+		}
+	}
+	mb, err := blob(manifestDigest)
+	if err != nil {
+		return nil, err
+	}
+	var manifest struct {
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(mb, &manifest); err != nil || !Valid(manifest.Config.Digest) {
+		return nil, fmt.Errorf("%s: image manifest has no valid config digest", p)
+	}
+	cb, err := blob(manifest.Config.Digest)
+	if err != nil {
+		return nil, err
+	}
+	var config struct {
+		RootFS struct {
+			DiffIDs []string `json:"diff_ids"`
+		} `json:"rootfs"`
+	}
+	if err := json.Unmarshal(cb, &config); err != nil {
+		return nil, fmt.Errorf("%s: image config: %w", p, err)
+	}
+	return config.RootFS.DiffIDs, nil
+}

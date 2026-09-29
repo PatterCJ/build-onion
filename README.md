@@ -85,7 +85,7 @@ $ onion peel ghcr.io/pattercj/build-onion@sha256:… --repo PatterCJ/build-onion
 | **verification** | The independent rebuild produced this exact digest. |
 | **pipeline** | The builder commit is recorded, every action is pinned, and job toolchains are recorded. |
 | **scans** | Each recorded scan: tool, stage, times, report digest, that it examined *this* build, and whether it completed. |
-| **dependencies** | Every package found *inside the artifact* is accounted for: Go modules by the lockfile, OS packages by pinned base images with networkless `RUN` steps. |
+| **dependencies** | Every package found *inside the artifact* is proven against what was declared, in any supported ecosystem: same name and version as the lockfile, and the same content hash where both carry one. Packages in the pinned base image's layers are attributed to it, and copies bundled inside a declared package are recognized. Anything else is a finding. `--packages` lists every package and its outcome. |
 | **source** *(`--source`)* | Every file in the checkout hashes to the signed snapshot. |
 | **rebuild** *(`--rebuild`)* | Replaying the manifest locally gives the same bytes. |
 
