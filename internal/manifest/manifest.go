@@ -50,6 +50,9 @@ type Dependencies struct {
 type Build struct {
 	Run string            `yaml:"run" json:"run"`
 	Env map[string]string `yaml:"env" json:"env,omitempty"`
+	// Scratch lists paths, besides outputs, that fetch or build may create in
+	// the source tree (node_modules, build/). Any other new file fails the build.
+	Scratch []string `yaml:"scratch" json:"scratch,omitempty"`
 }
 
 type Outputs struct {
@@ -132,6 +135,11 @@ func (m *Manifest) Validate() error {
 	if strings.TrimSpace(m.Build.Run) == "" {
 		add("build.run is required")
 	}
+	for _, p := range m.Build.Scratch {
+		if err := checkRelPath(p); err != nil || p == "." {
+			add("build.scratch: %q must be a subpath of the repo", p)
+		}
+	}
 	if len(m.Outputs.Files) == 0 && m.Outputs.Image == nil {
 		add("outputs must declare at least one file or an image")
 	}
@@ -160,6 +168,12 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// Writable lists every path the build may create: declared outputs plus
+// scratch. Source verification treats any other new file as tampering.
+func (m *Manifest) Writable() []string {
+	return append(append([]string{}, m.Outputs.Files...), m.Build.Scratch...)
 }
 
 // IsPinnedImage reports whether ref names an image by immutable digest.

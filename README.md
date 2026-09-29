@@ -1,110 +1,98 @@
 # 🧅 build-onion
 
-**A secure build pipeline for GitHub Actions that wraps every artifact in layers of evidence — and a verifier that peels them back.**
+**A build protector for CI/CD.** build-onion runs your build as a protected, fully inventoried build line, and gives you a verifier that peels any artifact back to the exact commit, pipeline and inputs that produced it.
 
-Most supply-chain tooling answers *"is this signed?"*. build-onion answers the question you actually care about:
+It targets the class of attacks where the **build pipeline itself** is the weak point:
 
-> Was this exact artifact built from **this commit**, by **this process**, from **these declared inputs** — and nothing else?
+- **Compromised build environments:** clean source goes in, a modified artifact comes out.
+- **Mutable pipeline dependencies:** an action tag or image tag repointed to malicious code runs inside every pipeline that references it.
+- **Everyday mistakes:** an unpinned tool, a build that quietly reaches the internet, a release cut from a branch nobody reviewed.
 
-A build is kicked off by a manifest (`build-onion.yml`) that declares everything the build may use. The pipeline builds in layers, from the source outward, and seals each one. `onion peel` then works in reverse: starting from nothing but the artifact, it removes one layer at a time and checks that each agrees with the one beneath it, down to the source tree — and optionally rebuilds it and compares the bytes.
+build-onion is **not a scanner** and doesn't try to replace your SCA, SAST or secret-scanning tools. It protects the build and records what happened in it. Those tools plug in through a [small, language-agnostic plugin API](docs/plugins.md), and their verdicts land in the same signed record.
 
-build-onion builds, signs, and verifies **itself** with this pipeline.
+build-onion builds, signs and verifies **itself** with this pipeline.
+
+## The question it answers
+
+> Was this exact artifact built from **this commit**, whose files hashed to **exactly these bytes**, by **this pipeline** (every action and tool pinned and recorded), from **these declared inputs**, after a **gate** allowed it, and nothing else?
+
+## How a build runs
+
+A manifest (`build-onion.yml`) declares everything the build may use. Anything undeclared is refused.
 
 ```mermaid
 flowchart LR
-  subgraph wrap["Build: onion-build.yml (inside → out)"]
-    direction LR
-    S[source<br/>exact commit + tree] --> T[toolchain<br/>pins checked] --> D[dependencies<br/>fetched vs lockfile] --> B[build<br/>--network none] --> SE[seal<br/>provenance · SBOM · inventory]
-  end
-  SE ==> A((artifact))
-  A ==> P
-  subgraph peel["Verify: onion peel (outside → in)"]
-    direction LR
-    P[seal<br/>Sigstore + signer identity] --> PR[provenance<br/>SLSA v1] --> I[inventory<br/>same run, same source] --> DE[dependencies<br/>SBOM ⊆ lockfile] --> SO[source<br/>tree + lockfiles] --> R[rebuild<br/>same bytes?]
-  end
+  R[resolve<br/>pin build-onion<br/>commit via OIDC] --> V[validate<br/>sha256 every<br/>source file · pins]
+  V --> G[gate<br/>release policy ·<br/>sensitive changes ·<br/>plugins]
+  G --> F[fetch<br/>deps into cache ·<br/>source re-verified]
+  F --> B[build<br/>--network none ·<br/>no signing rights ·<br/>verified before+after]
+  B --> S[seal<br/>releasable only:<br/>inventory · SBOM ·<br/>SLSA provenance]
 ```
 
-## Why it's SLSA Build Level 3
-
-| SLSA v1.0 requirement | How build-onion meets it |
+| Layer | Protection |
 |---|---|
-| Provenance exists, is authentic | Every output gets SLSA v1 provenance signed with Sigstore via GitHub artifact attestations. |
-| Hosted build platform | GitHub-hosted runners only; `peel` rejects provenance with `runner_environment` other than `github-hosted`. |
-| Provenance is unforgeable | Signing happens in the `seal` job, which never executes caller code. The signing identity is the **build-onion reusable workflow**, not the caller's workflow — a caller cannot mint a certificate for it. |
-| Isolated builds | Each job is a fresh VM. The caller's build commands run in a job with **no `id-token` permission**, so they can't request a signing token. Outputs are re-hashed in `seal`; nothing the build job *reports* is trusted. |
+| **Source** | Every tracked file is hashed with sha256 before anything runs. The fetch and build jobs re-verify every byte before and after each step, and any new file outside the declared outputs fails the build. `.gitignore` can't hide a planted file. |
+| **Toolchain** | The builder image and every `FROM` must be pinned by digest, and every action by commit SHA, or the build fails. |
+| **Gate** | Release refs and events come from policy. Pull requests, feature branches and forks build but are never sealed. `pull_request_target` is refused outright. Changes to workflows, the manifest, lockfiles, the Dockerfile or the policy are flagged. Gate plugins (such as a commit-risk model) are advisory or enforcing. |
+| **Dependencies** | Fetched in their own job and verified against the lockfile. The build sees only that cache. |
+| **Build** | Runs in the pinned builder with `--network none`, in a job that has **no permission to sign**. |
+| **Pipeline** | The inventory records the build-onion commit and CLI digest, every workflow with every action it pins, and each job's runner image and tool versions. "Which builds ran X?" becomes a query. |
+| **Seal** | A job that never runs caller code re-hashes the outputs and signs SLSA v1 provenance, a CycloneDX SBOM of what was actually built, and the inventory. |
 
-And beyond L3:
+### Why it's SLSA Build Level 3
 
-- **Hermetic build step** — the build runs in the pinned builder image with `--network none`. Dependencies are fetched in a separate job and checked against the lockfile first.
-- **Everything pinned** — the builder image and every `FROM` by digest, every action by commit SHA. `onion validate` fails the build otherwise.
-- **Bottom-up inventory** — a signed record of the manifest, tree hash, lockfiles, every locked dependency, the builder, and every output, bound to the same run as the provenance.
-- **Reproducible** — `onion peel --rebuild` replays the manifest from a clean export of the commit and compares digests. build-onion's own release job does this on every build.
+| Requirement | How |
+|---|---|
+| Hosted build platform | GitHub-hosted runners. `peel` rejects provenance from any other `runner_environment`. |
+| Unforgeable provenance | Signing happens only in `seal`, which never executes caller code. The certificate identity is the **build-onion reusable workflow**, which a caller cannot impersonate. |
+| Isolated builds | Fresh VMs per job. The build job can't request a signing token, and nothing it *reports* is trusted: outputs are re-hashed. |
 
 ## Peeling an artifact
 
 ```console
-$ onion peel ghcr.io/pattercj/build-onion@sha256:… --repo PatterCJ/build-onion --commit 3f9c…
+$ onion peel ghcr.io/pattercj/build-onion@sha256:… --repo PatterCJ/build-onion --commit 3f9c… --source .
 ```
 
-| Layer | What `peel` checks |
+| Layer | Checks |
 |---|---|
-| **seal** | Each Sigstore bundle verifies (signature, Rekor, certificate chain); signer is the build-onion workflow; certificate's source repo/commit match the claim; provenance, SBOM, and inventory were all signed by **one** run. |
-| **provenance** | SLSA v1, GitHub build type, builder is build-onion, hosted runner, source repo and commit match. |
-| **inventory** | Same commit and run as provenance; the artifact is a declared output; builder pinned; build had no network; inputs are locked. |
-| **dependencies** | Every Go module the SBOM found *inside the artifact* is in the lockfile — catches anything linked in that was never declared. |
-| **source** *(with `--source`)* | The checkout is at the claimed commit and clean; tree hash, manifest, and lockfiles match the inventory byte-for-byte. |
-| **rebuild** *(with `--rebuild`)* | Rebuilding from the manifest yields the same digest. |
+| **seal** | Every Sigstore bundle verifies; the signer is build-onion; the certificate's repo and commit match the claim; one run signed provenance, SBOM and inventory. |
+| **provenance** | SLSA v1, the builder is build-onion, a hosted runner, and the repo and commit match. |
+| **inventory** | Same commit and run; the artifact is a declared output; the builder is pinned; the build had no network; inputs are locked. |
+| **gate** | The gate allowed release. Sensitive changes and advisory plugin findings are shown as warnings. |
+| **pipeline** | The builder commit is recorded, every action is pinned, and job toolchains are recorded. |
+| **dependencies** | Every Go module found *inside the artifact* is in the lockfile. |
+| **source** *(`--source`)* | Every file in the checkout hashes to the signed snapshot; the tree, manifest and lockfiles match. |
+| **rebuild** *(`--rebuild`)* | Replaying the manifest gives the same bytes. |
 
-Bundles come from the GitHub attestations API by default, or from a directory with `--bundles` for offline and air-gapped verification. `peel` exits non-zero unless every layer passes.
+The result is PASS/WARN/FAIL per check, with a non-zero exit on any FAIL. Add `--json` to feed a deploy gate. Bundles come from the GitHub attestations API, or from `--bundles DIR` for offline and air-gapped verification.
 
 ## Adopt it
 
-1. Add a `build-onion.yml` to your repo:
-
-   ```yaml
-   apiVersion: build-onion/v1
-   name: widget
-   builder:
-     image: docker.io/library/golang:1.27.1-bookworm@sha256:…   # digest required
-   dependencies:
-     lockfiles: [go.sum]
-     fetch: go mod download && go mod verify    # runs WITH network
-     cache: /go/pkg/mod                          # handed to the build read-only
-   build:
-     run: go build -o dist/widget ./cmd/widget   # runs with NO network
-     env: { CGO_ENABLED: "0", GOPROXY: "off", GOFLAGS: "-trimpath -buildvcs=false" }
-   outputs:
-     files: [dist/widget]
-     image:                                      # optional
-       name: ghcr.io/acme/widget
-       dockerfile: Dockerfile
-   ```
-
-2. Call the reusable workflow, pinned by commit:
-
-   ```yaml
-   jobs:
-     build:
-       permissions: { contents: read, id-token: write, attestations: write, packages: write }
-       uses: PatterCJ/build-onion/.github/workflows/onion-build.yml@<commit-sha>
-   ```
-
-3. Verify anywhere with `onion peel` — or with the container: `docker run ghcr.io/pattercj/build-onion peel …`.
-
-See [docs/adopting.md](docs/adopting.md) for other ecosystems and [docs/threat-model.md](docs/threat-model.md) for exactly what this does and doesn't protect against.
-
-## The `onion` CLI
-
-```text
-onion validate   check the manifest and that every input is pinned
-onion fetch      run the dependency step in the builder image (network on)
-onion build      run the build step in the builder image (network off)
-onion inventory  produce the bottom-up inventory predicate
-onion digest     sha256 of a file, or manifest digest of an OCI archive
-onion peel       verify an artifact layer by layer
+```yaml
+# .github/workflows/release.yml
+jobs:
+  build:
+    permissions: { contents: read, id-token: write, attestations: write, packages: write }
+    uses: PatterCJ/build-onion/.github/workflows/onion-build.yml@<commit-sha>
+    with:
+      policy: .build-onion/policy.yml   # optional
 ```
 
-The pipeline and `peel --rebuild` share one implementation of fetch and build, so "what the pipeline did" and "what the verifier replays" can't drift apart.
+- [Adopting](docs/adopting.md): writing the manifest, other ecosystems, reproducibility.
+- [Policy](docs/policy.md): release rules, sensitive paths, making policy mandatory across an org.
+- [Plugins](docs/plugins.md): the JSON-over-stdio API for bringing your own tools.
+- [Threat model](docs/threat-model.md): exactly what this does and doesn't stop.
+
+## Portability
+
+The `onion` CLI takes everything as flags and knows nothing about GitHub. The GitHub Actions workflow is the first integration: it supplies events, refs, and Sigstore signing through GitHub's attestations. The same commands (`source`, `gate`, `fetch`, `build`, `record`, `inventory`, `peel`) are the building blocks for other CI systems and cloud build services such as AWS CodeBuild.
+
+## Roadmap
+
+- [x] **Phase A:** per-file source snapshot, pipeline inventory, gate with plugin API
+- [ ] **Phase B:** separate the build, security and publish lines. The security line re-verifies the source, runs `scan` plugins, and independently rebuilds from the same hashed inputs; that rebuild catches a file swapped during compilation and restored afterward. The publish line gates on `onion peel`.
+- [ ] **Phase C:** no internet in the build line. Fetch goes through an allow-list egress proxy to a configured artifact store (Artifactory, Nexus, GitHub Packages, …), and blocked attempts are recorded.
+- [ ] **Phase D:** reference gate plugin for commit-risk scoring; `onion audit-repo` for insecure GitHub settings (branch/tag protection, token defaults, fork approval).
 
 ## Development
 
@@ -113,7 +101,7 @@ make test        # go vet + go test
 make validate    # onion validate on this repo
 ```
 
-The Sigstore verification tests run offline against a real GitHub Actions–signed bundle, so the cryptographic path is exercised without network access.
+The Sigstore tests verify a real GitHub Actions–signed bundle offline, and the plugin tests exercise the full protocol with script plugins.
 
 ## License
 

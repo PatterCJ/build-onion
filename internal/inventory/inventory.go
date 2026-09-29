@@ -14,7 +14,9 @@ import (
 	"strings"
 
 	"github.com/PatterCJ/build-onion/internal/digest"
+	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/manifest"
+	"github.com/PatterCJ/build-onion/internal/source"
 )
 
 const PredicateType = "https://github.com/PatterCJ/build-onion/inventory/v1"
@@ -30,6 +32,9 @@ type Inventory struct {
 	Build       Build    `json:"build"`
 	Outputs     []Output `json:"outputs"`
 	Run         Run      `json:"run"`
+	Pipeline    Pipeline `json:"pipeline"`
+	// Gate is the pre-build verdict: release policy, sensitive changes, plugins.
+	Gate *gate.Verdict `json:"gate,omitempty"`
 }
 
 type FileRef struct {
@@ -41,6 +46,10 @@ type Source struct {
 	Repository string `json:"repository"` // https://github.com/owner/repo
 	Commit     string `json:"commit"`
 	Tree       string `json:"tree"`
+	// Snapshot is the digest of the sha256-per-file source snapshot, taken
+	// before the build and re-verified in every job.
+	Snapshot string `json:"snapshot"`
+	Files    int    `json:"files"`
 }
 
 type Builder struct {
@@ -81,6 +90,11 @@ type Params struct {
 	FilesDir      string // directory holding the declared output files by basename
 	ImageArchive  string // OCI layout tarball, when the manifest declares an image
 	InvocationURL string
+	// Snapshot is the source snapshot taken before the build. Generate
+	// re-verifies SourceDir against it.
+	Snapshot *source.Snapshot
+	Pipeline Pipeline
+	Gate     *gate.Verdict
 }
 
 // Generate builds the inventory. It hashes everything itself; it never trusts
@@ -93,9 +107,15 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 	if err := m.Validate(); err != nil {
 		return nil, nil, err
 	}
+	if err := checkSnapshot(p); err != nil {
+		return nil, nil, err
+	}
 	inv := &Inventory{
 		Manifest: FileRef{Path: p.ManifestPath, Digest: manifest.Digest(raw)},
-		Source:   Source{Repository: p.Repository, Commit: p.Commit, Tree: p.Tree},
+		Source: Source{Repository: p.Repository, Commit: p.Commit, Tree: p.Tree,
+			Snapshot: p.Snapshot.Digest, Files: len(p.Snapshot.Files)},
+		Pipeline: p.Pipeline,
+		Gate:     p.Gate,
 		Builder:  Builder{Image: m.Builder.Image},
 		Build: Build{
 			Fetch:   m.Dependencies.Fetch,
@@ -143,6 +163,29 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		inv.Outputs = append(inv.Outputs, Output{Kind: "oci-image", Name: img.Name, Digest: d})
 	}
 	return inv, m, nil
+}
+
+// checkSnapshot requires the pre-build snapshot to describe this commit and
+// the checkout being inventoried to still match it byte for byte.
+func checkSnapshot(p Params) error {
+	s := p.Snapshot
+	if s == nil {
+		return errors.New("a source snapshot is required")
+	}
+	if err := s.Check(); err != nil {
+		return err
+	}
+	if s.Commit != p.Commit || s.Tree != p.Tree {
+		return fmt.Errorf("snapshot is of %s (tree %s), building %s (tree %s)", s.Commit, s.Tree, p.Commit, p.Tree)
+	}
+	d, err := source.Verify(p.SourceDir, s, nil)
+	if err != nil {
+		return err
+	}
+	if !d.Empty() {
+		return d
+	}
+	return nil
 }
 
 // ParseGoSum lists every module version whose content (not just go.mod) is

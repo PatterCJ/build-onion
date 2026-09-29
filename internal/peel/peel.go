@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/manifest"
+	"github.com/PatterCJ/build-onion/internal/source"
 )
 
 const (
@@ -30,6 +32,7 @@ type Status string
 const (
 	Pass Status = "PASS"
 	Fail Status = "FAIL"
+	Warn Status = "WARN" // recorded concern that does not fail verification
 	Skip Status = "SKIP"
 )
 
@@ -62,6 +65,10 @@ func (r *Report) add(layer, check string, ok bool, detail string, a ...any) bool
 	}
 	r.Results = append(r.Results, Result{Layer: layer, Check: check, Status: st, Detail: fmt.Sprintf(detail, a...)})
 	return ok
+}
+
+func (r *Report) warn(layer, check, detail string) {
+	r.Results = append(r.Results, Result{Layer: layer, Check: check, Status: Warn, Detail: detail})
 }
 
 func (r *Report) skip(layer, check, detail string) {
@@ -168,7 +175,14 @@ func Run(in Input) *Report {
 		r.add("inventory", "inputs locked", len(inv.Lockfiles) > 0, "%d lockfile(s), %d locked dependencies", len(inv.Lockfiles), len(inv.Dependencies))
 	}
 
-	// Layer 4: dependencies — everything the SBOM finds in the artifact must be
+	// Layer 4: gate — the build was allowed to become a release, and what the
+	// gate noticed on the way in.
+	if haveInv {
+		checkGate(r, &inv)
+		checkPipeline(r, &inv)
+	}
+
+	// Layer 5: dependencies — everything the SBOM finds in the artifact must be
 	// something the lockfile declared.
 	if v := verified[CycloneDX]; v != nil && haveInv {
 		checkDependencies(r, v.Statement.Predicate, &inv)
@@ -176,14 +190,14 @@ func Run(in Input) *Report {
 		r.skip("dependencies", "SBOM within lockfile", "needs verified SBOM and inventory")
 	}
 
-	// Layer 5: source — recompute the inventory's source facts from a checkout.
+	// Layer 6: source — recompute the inventory's source facts from a checkout.
 	if in.SourceDir == "" {
 		r.skip("source", "checkout matches inventory", "pass --source <checkout> to peel to the source")
 	} else if haveInv {
 		checkSource(r, in.SourceDir, &inv)
 	}
 
-	// Layer 6: rebuild — run the declared build again and compare.
+	// Layer 7: rebuild — run the declared build again and compare.
 	if !in.Rebuild {
 		r.skip("rebuild", "reproduces artifact", "pass --rebuild with --source to rebuild")
 	} else if haveInv && in.SourceDir != "" {
@@ -230,6 +244,55 @@ func (p *provenance) sourceCommit(repoURL string) string {
 		}
 	}
 	return ""
+}
+
+func checkGate(r *Report, inv *inventory.Inventory) {
+	g := inv.Gate
+	if !r.add("gate", "gate verdict recorded", g != nil, "") {
+		return
+	}
+	r.add("gate", "release allowed", g.Releasable && !g.Blocked, "%s", g.Reason)
+	if len(g.SensitiveChange) > 0 {
+		r.warn("gate", "build-sensitive change", fmt.Sprintf("this commit changed %s", strings.Join(g.SensitiveChange, ", ")))
+	}
+	if !g.ChangeKnown {
+		r.warn("gate", "change set", "unknown; no previous build point to diff against")
+	}
+	for _, p := range g.Plugins {
+		detail := fmt.Sprintf("%s (%s): %s", p.Verdict, p.Mode, p.Summary)
+		if p.Score != nil {
+			detail = fmt.Sprintf("%s, score %.2f", detail, *p.Score)
+		}
+		switch {
+		case p.Blocking:
+			r.add("gate", "plugin "+p.Name, false, "%s", detail)
+		case p.Verdict == "pass":
+			r.add("gate", "plugin "+p.Name, true, "%s", detail)
+		default:
+			r.warn("gate", "plugin "+p.Name, detail)
+		}
+	}
+}
+
+var pinnedUse = regexp.MustCompile(`^[^@\s]+@[a-f0-9]{40}$`)
+
+func checkPipeline(r *Report, inv *inventory.Inventory) {
+	pl := inv.Pipeline
+	r.add("pipeline", "builder commit recorded", len(pl.BuildOnion.Commit) == 40,
+		"build-onion %s@%s", pl.BuildOnion.Repository, pl.BuildOnion.Commit)
+	var loose []string
+	n := 0
+	for _, w := range pl.Workflows {
+		for _, a := range w.Actions {
+			n++
+			if !strings.HasPrefix(a, "./") && !pinnedUse.MatchString(a) && !(strings.HasPrefix(a, "docker://") && manifest.IsPinnedImage(strings.TrimPrefix(a, "docker://"))) {
+				loose = append(loose, a)
+			}
+		}
+	}
+	r.add("pipeline", "every action pinned", len(pl.Workflows) > 0 && len(loose) == 0,
+		"%d action reference(s) across %d workflow(s)%s", n, len(pl.Workflows), listNote(loose))
+	r.add("pipeline", "jobs inventoried", len(pl.Jobs) > 0, "%d job(s) recorded runner and tool versions", len(pl.Jobs))
 }
 
 func checkDependencies(r *Report, bom json.RawMessage, inv *inventory.Inventory) {
@@ -303,6 +366,12 @@ func checkSource(r *Report, dir string, inv *inventory.Inventory) {
 	r.add("source", "tree hash", err == nil && tree == inv.Source.Tree, "tree %s, inventory %s%s", tree, inv.Source.Tree, errNote(err))
 	dirty, err := git(dir, "status", "--porcelain", "--untracked-files=no")
 	r.add("source", "checkout is clean", err == nil && dirty == "", "%s", firstLine(dirty))
+	if snap, err := source.Take(dir); err == nil {
+		r.add("source", "every file matches snapshot", snap.Digest == inv.Source.Snapshot,
+			"%d files hash to %s, inventory %s", len(snap.Files), snap.Digest, inv.Source.Snapshot)
+	} else {
+		r.add("source", "every file matches snapshot", false, "%v", err)
+	}
 	for _, f := range append([]inventory.FileRef{inv.Manifest}, inv.Lockfiles...) {
 		d, err := digest.File(filepath.Join(dir, f.Path))
 		r.add("source", f.Path+" unchanged", err == nil && d == f.Digest, "%s%s", d, errNote(err))

@@ -10,6 +10,7 @@ The manifest is the whole contract. Anything not declared is not available to th
 | `dependencies.lockfiles` | Hashed into the inventory. `go.sum` is also parsed for the dependency cross-check. |
 | `dependencies.fetch` / `cache` | `fetch` runs **with network** and must populate `cache` (a path inside the builder). The cache is then the only third-party input the build sees. |
 | `build.run` / `env` | Runs with `--network none`, as your UID, with `HOME=/tmp`. `env` applies to this step only, not to `fetch`. |
+| `build.scratch` | Other paths `fetch` or `build` may create in the tree (`node_modules`, `build/`). Any other new file fails the build. |
 | `outputs.files` | Must not exist in the source; they must be produced by the build. |
 | `outputs.image` | Built from the Dockerfile with `RUN` steps networkless, as a single-platform reproducible OCI image. Every `FROM` must be pinned. |
 
@@ -26,6 +27,7 @@ dependencies:
   cache: /cache
 build:
   run: cp -r /cache/node_modules . && npm run build --offline
+  scratch: [node_modules, build]
 ```
 
 ```yaml
@@ -47,7 +49,11 @@ build:
 - Anything that embeds time: honor `SOURCE_DATE_EPOCH`.
 - Images: build from already-compiled outputs; the pipeline sets `rewrite-timestamp=true`.
 
-## 3. Pin the workflow
+## 3. Add a policy (optional)
+
+Without one, only `push`/`workflow_dispatch`/`release` builds of `main` and `v*` tags are sealed. See [policy.md](policy.md) to change that, flag more sensitive paths, or add [plugins](plugins.md). If a plugin needs secrets, pass `secrets: inherit`. Each plugin receives only the secret names it declares.
+
+## 4. Pin the workflow
 
 Call the reusable workflow by **commit SHA**, and pass `--signer-ref` to `peel` if you want to require a specific build-onion version:
 
@@ -55,7 +61,7 @@ Call the reusable workflow by **commit SHA**, and pass `--signer-ref` to `peel` 
 onion peel dist/widget --repo acme/widget --signer-ref refs/tags/v0.1.0
 ```
 
-## 4. Verify in your deploy gate
+## 5. Verify in your deploy gate
 
 `peel` exits non-zero if any layer fails, and `--json` gives a machine-readable report. Typical gate:
 

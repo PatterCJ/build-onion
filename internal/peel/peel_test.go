@@ -13,7 +13,10 @@ import (
 
 	"github.com/PatterCJ/build-onion/internal/attest"
 	"github.com/PatterCJ/build-onion/internal/digest"
+	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/inventory"
+	"github.com/PatterCJ/build-onion/internal/plugin"
+	"github.com/PatterCJ/build-onion/internal/source"
 )
 
 const (
@@ -72,6 +75,15 @@ func newWorld() *world {
 			Build:        inventory.Build{Run: "go build", Network: "none"},
 			Outputs:      []inventory.Output{{Kind: "file", Name: "widget", Digest: artifactDigest}},
 			Run:          inventory.Run{InvocationURL: runURL},
+			Pipeline: inventory.Pipeline{
+				Platform:   "github-actions",
+				BuildOnion: inventory.BuildOnionRef{Repository: "PatterCJ/build-onion", Commit: strings.Repeat("b", 40)},
+				Workflows: []inventory.Workflow{{Role: "build-onion", Actions: []string{
+					"actions/checkout@" + strings.Repeat("c", 40), "./.github/workflows/onion-build.yml",
+				}}},
+				Jobs: []inventory.Job{{Name: "build", Runner: "ubuntu24 20260921.1"}},
+			},
+			Gate: &gate.Verdict{Releasable: true, Reason: "push on refs/heads/main", ChangeKnown: true, ChangedFiles: 2},
 		},
 		sbom: map[string]any{"components": []any{
 			map[string]any{"name": "github.com/acme/widget", "purl": "pkg:golang/github.com/acme/widget@v0.0.0-2026"},
@@ -176,6 +188,30 @@ func TestPeelDetectsTampering(t *testing.T) {
 			world: func(w *world) { w.inv.Dependencies[0].Version = "v3.0.0" },
 			want:  "gopkg.in/yaml.v3@v3.0.1",
 		},
+		"gate did not allow release": {
+			world: func(w *world) { w.inv.Gate.Releasable, w.inv.Gate.Reason = false, "pull_request" },
+			want:  "gate/release allowed",
+		},
+		"gate verdict missing": {
+			world: func(w *world) { w.inv.Gate = nil },
+			want:  "gate/gate verdict recorded",
+		},
+		"enforced plugin failed": {
+			world: func(w *world) {
+				w.inv.Gate.Plugins = []plugin.Record{{Name: "sca", Mode: plugin.Enforce, Verdict: plugin.Fail, Blocking: true, Summary: "critical CVE"}}
+			},
+			want: "gate/plugin sca",
+		},
+		"unpinned action in pipeline": {
+			world: func(w *world) {
+				w.inv.Pipeline.Workflows[0].Actions = append(w.inv.Pipeline.Workflows[0].Actions, "example/scan-action@v1")
+			},
+			want: "example/scan-action@v1",
+		},
+		"builder commit missing": {
+			world: func(w *world) { w.inv.Pipeline.BuildOnion.Commit = "" },
+			want:  "pipeline/builder commit recorded",
+		},
 		"no attestations": {
 			input: func(in *Input) { in.Candidates = nil },
 			want:  "seal/bundles verified",
@@ -206,6 +242,29 @@ func TestPeelDetectsTampering(t *testing.T) {
 	}
 }
 
+func TestPeelAdvisoryWarnings(t *testing.T) {
+	w := newWorld()
+	score := 0.81
+	w.inv.Gate.SensitiveChange = []string{".github/workflows/release.yml"}
+	w.inv.Gate.Plugins = []plugin.Record{{Name: "jev", Mode: plugin.Advisory, Verdict: plugin.Warn, Score: &score, Summary: "unusual commit"}}
+	r := Run(w.input(t))
+	if !r.OK() {
+		t.Fatalf("advisory findings failed verification: %v", failures(r))
+	}
+	var warns []string
+	for _, res := range r.Results {
+		if res.Status == Warn {
+			warns = append(warns, res.Check+": "+res.Detail)
+		}
+	}
+	joined := strings.Join(warns, "\n")
+	for _, want := range []string{"build-sensitive change", "plugin jev", "score 0.81"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing warning %q in:\n%s", want, joined)
+		}
+	}
+}
+
 func TestPeelSourceLayer(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
@@ -233,6 +292,11 @@ func TestPeelSourceLayer(t *testing.T) {
 	w.inv.Manifest = inventory.FileRef{Path: "build-onion.yml", Digest: md}
 	w.inv.Lockfiles = []inventory.FileRef{{Path: "go.sum", Digest: ld}}
 	w.inv.Source.Commit, w.inv.Source.Tree = head, tree
+	snap, err := source.Take(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.inv.Source.Snapshot = snap.Digest
 	w.cert.SourceRepositoryDigest = head
 	w.prov["buildDefinition"].(map[string]any)["resolvedDependencies"] = []any{map[string]any{
 		"uri": "git+" + repoURL + "@refs/heads/main", "digest": map[string]any{"gitCommit": head},
@@ -249,7 +313,7 @@ func TestPeelSourceLayer(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "go.sum"), []byte("gopkg.in/yaml.v3 v3.0.2 h1:y\n"), 0o644)
 	r := Run(in)
 	joined := strings.Join(failures(r), "\n")
-	for _, want := range []string{"source/checkout is clean", "source/go.sum unchanged"} {
+	for _, want := range []string{"source/checkout is clean", "source/go.sum unchanged", "source/every file matches snapshot"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in:\n%s", want, joined)
 		}

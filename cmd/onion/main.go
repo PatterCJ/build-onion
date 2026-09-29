@@ -22,6 +22,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/attest"
 	"github.com/PatterCJ/build-onion/internal/builder"
 	"github.com/PatterCJ/build-onion/internal/digest"
+	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/lint"
 	"github.com/PatterCJ/build-onion/internal/manifest"
@@ -37,10 +38,13 @@ const usage = `onion — layered builds you can peel back
 
 Usage:
   onion validate  [--source DIR] [--manifest FILE]
-  onion fetch     [--source DIR] [--manifest FILE] --cache DIR
-  onion build     [--source DIR] [--manifest FILE] --cache DIR --out DIR
+  onion source    snapshot --out FILE | verify --snapshot FILE [--expect DIGEST]
+  onion gate      --snapshot FILE --event E --ref REF [--policy FILE] [--base SHA] [--out FILE]
+  onion fetch     [--source DIR] [--manifest FILE] --cache DIR [--snapshot FILE]
+  onion build     [--source DIR] [--manifest FILE] --cache DIR --out DIR [--snapshot FILE]
+  onion record    job|workflow|build-onion --out FILE [flags]
   onion digest    [--oci] PATH...
-  onion inventory --source DIR --repository URL --commit SHA --tree SHA --files DIR [--image-archive TAR] [--invocation URL]
+  onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
   onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--bundles DIR] [--source DIR] [--rebuild] [--json]
   onion version
 `
@@ -52,6 +56,9 @@ func main() {
 	}
 	cmds := map[string]func([]string) error{
 		"validate":  cmdValidate,
+		"source":    cmdSource,
+		"gate":      cmdGate,
+		"record":    cmdRecord,
 		"fetch":     cmdFetch,
 		"build":     cmdBuild,
 		"digest":    cmdDigest,
@@ -122,18 +129,7 @@ func writePlan(p string, m *manifest.Manifest) error {
 	if img := m.Outputs.Image; img != nil {
 		lines = append(lines, "image_name="+img.Name, "dockerfile="+img.Dockerfile, "context="+img.Context)
 	}
-	for _, l := range lines {
-		if strings.ContainsAny(l, "\r\n") {
-			return fmt.Errorf("plan value contains a newline: %q", l)
-		}
-	}
-	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = fmt.Fprintln(f, strings.Join(lines, "\n"))
-	return err
+	return appendLines(p, lines...)
 }
 
 func cmdFetch(args []string) error {
@@ -141,6 +137,7 @@ func cmdFetch(args []string) error {
 	var s sourceFlags
 	s.register(fs)
 	cache := fs.String("cache", "", "dependency cache directory to populate")
+	snap := fs.String("snapshot", "", "verify the source against this snapshot before and after")
 	fs.Parse(args)
 	if *cache == "" {
 		return errors.New("--cache is required")
@@ -149,7 +146,27 @@ func cmdFetch(args []string) error {
 	if err != nil {
 		return err
 	}
-	return builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Fetch(s.source, *cache, m)
+	return guarded(s.source, *snap, m, func() error {
+		return builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Fetch(s.source, *cache, m)
+	})
+}
+
+// guarded runs step between two source verifications, so anything the step
+// changes in the tree besides declared outputs and scratch fails the build.
+func guarded(dir, snap string, m *manifest.Manifest, step func() error) error {
+	if snap == "" {
+		return step()
+	}
+	if err := verifySource(dir, snap, "", m.Writable()); err != nil {
+		return fmt.Errorf("before step: %w", err)
+	}
+	if err := step(); err != nil {
+		return err
+	}
+	if err := verifySource(dir, snap, "", m.Writable()); err != nil {
+		return fmt.Errorf("after step: %w", err)
+	}
+	return nil
 }
 
 func cmdBuild(args []string) error {
@@ -158,6 +175,7 @@ func cmdBuild(args []string) error {
 	s.register(fs)
 	cache := fs.String("cache", "", "dependency cache directory populated by fetch")
 	out := fs.String("out", "", "directory to collect declared output files into")
+	snap := fs.String("snapshot", "", "verify the source against this snapshot before and after")
 	fs.Parse(args)
 	if *cache == "" || *out == "" {
 		return errors.New("--cache and --out are required")
@@ -166,7 +184,9 @@ func cmdBuild(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := (builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}).Build(s.source, *cache, m); err != nil {
+	if err := guarded(s.source, *snap, m, func() error {
+		return builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Build(s.source, *cache, m)
+	}); err != nil {
 		return err
 	}
 	digests, err := builder.Collect(s.source, *out, m)
@@ -215,9 +235,27 @@ func cmdInventory(args []string) error {
 	fs.StringVar(&p.FilesDir, "files", "", "directory of built output files")
 	fs.StringVar(&p.ImageArchive, "image-archive", "", "OCI layout tarball of the built image")
 	fs.StringVar(&p.InvocationURL, "invocation", "", "URL of the run that built this")
+	snapPath := fs.String("snapshot", "", "source snapshot taken before the build (required)")
+	expect := fs.String("expect-snapshot", "", "require the snapshot to have this digest")
+	records := fs.String("records", "", "directory of `onion record` files (required)")
+	platform := fs.String("platform", "local", "CI platform name")
+	gatePath := fs.String("gate", "", "gate verdict JSON from `onion gate`")
 	fs.Parse(args)
-	if p.Repository == "" || p.Commit == "" || p.Tree == "" || p.FilesDir == "" {
-		return errors.New("--repository, --commit, --tree and --files are required")
+	if p.Repository == "" || p.Commit == "" || p.Tree == "" || p.FilesDir == "" || *snapPath == "" || *records == "" {
+		return errors.New("--repository, --commit, --tree, --files, --snapshot and --records are required")
+	}
+	var err error
+	if p.Snapshot, err = loadSnapshot(*snapPath, *expect); err != nil {
+		return err
+	}
+	if p.Pipeline, err = inventory.ReadPipeline(*records, *platform); err != nil {
+		return err
+	}
+	if *gatePath != "" {
+		p.Gate = new(gate.Verdict)
+		if err := readJSON(*gatePath, p.Gate); err != nil {
+			return err
+		}
 	}
 	inv, _, err := inventory.Generate(p)
 	if err != nil {
@@ -334,9 +372,17 @@ func printReport(w io.Writer, r *peel.Report) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", l, res.Status, res.Check, res.Detail)
 	}
 	tw.Flush()
+	warnings := 0
+	for _, res := range r.Results {
+		if res.Status == peel.Warn {
+			warnings++
+		}
+	}
 	verdict := "VERIFIED: built as claimed"
 	if !r.OK() {
 		verdict = "NOT VERIFIED"
+	} else if warnings > 0 {
+		verdict += fmt.Sprintf(" (%d warning(s) to review)", warnings)
 	}
 	fmt.Fprintf(w, "\n%s\n", verdict)
 }
