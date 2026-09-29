@@ -1,0 +1,56 @@
+# build-onion builds itself through its own reusable workflow, then the CLI it
+# just produced peels its own artifacts back — including a full rebuild.
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  onion:
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
+    uses: ./.github/workflows/onion-build.yml
+
+  peel:
+    name: peel (dogfood)
+    needs: onion
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE: ${{ needs.onion.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-outputs
+          path: ${{ runner.temp }}/out
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-bundles
+          path: ${{ runner.temp }}/bundles
+      - name: Peel the binary — offline bundles, source, and rebuild
+        run: |
+          onion="$RUNNER_TEMP/out/files/onion"
+          chmod +x "$onion"
+          "$onion" peel "$onion" --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" \
+            --bundles "$RUNNER_TEMP/bundles" --source . --rebuild | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Peel the image with the image — online, via the attestations API
+        if: env.IMAGE != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker run --rm -e GITHUB_TOKEN -v "$HOME/.docker:/home/nonroot/.docker:ro" "$IMAGE" \
+            peel "$IMAGE" --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,32 @@
+# build-onion builds itself with its own pipeline. This manifest is the only
+# description of that build: onion-build.yml reads it, and `onion peel
+# --rebuild` replays it.
+apiVersion: build-onion/v1
+name: build-onion
+
+builder:
+  image: docker.io/library/golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195
+
+dependencies:
+  lockfiles: [go.sum]
+  # Runs with network. go mod verify checks every module against go.sum.
+  fetch: go mod download && go mod verify
+  cache: /go/pkg/mod
+
+build:
+  # Runs with --network none against the fetched module cache.
+  run: go build -ldflags="-s -w -buildid=" -o dist/onion ./cmd/onion
+  env:
+    CGO_ENABLED: "0"
+    GOOS: linux
+    GOARCH: amd64
+    GOPROXY: "off"
+    GOTOOLCHAIN: local
+    GOFLAGS: -mod=readonly -trimpath -buildvcs=false
+
+outputs:
+  files: [dist/onion]
+  image:
+    name: ghcr.io/pattercj/build-onion
+    dockerfile: Dockerfile
+    context: .

@@ -1,0 +1,339 @@
+# build-onion reusable workflow: SLSA Build Level 3 on GitHub-hosted runners.
+#
+# Call it from any repo that has a build-onion.yml:
+#
+#   jobs:
+#     build:
+#       permissions: { contents: read, id-token: write, attestations: write, packages: write }
+#       uses: PatterCJ/build-onion/.github/workflows/onion-build.yml@<commit sha>
+#
+# Layers, inside out:
+#   resolve   pin the exact build-onion commit this workflow runs at (from OIDC)
+#   validate  manifest + pin checks on the triggering commit; no caller code runs
+#   fetch     dependencies, with network, in the pinned builder image
+#   build     the caller's build, --network none, NO signing credentials
+#   seal      re-hash outputs, inventory + SBOM, sign provenance/SBOM/inventory
+#
+# Why this is L3: the only job that can mint an OIDC token for signing (seal)
+# never executes caller-controlled code, and the certificate identity it signs
+# with is this reusable workflow, not the caller's. A malicious build step can
+# produce bad bytes, but it cannot lie about where they came from.
+name: onion-build
+
+on:
+  workflow_call:
+    inputs:
+      manifest:
+        description: Path to the build manifest, relative to the repo root.
+        type: string
+        default: build-onion.yml
+      publish-image:
+        description: Push the image output (if the manifest declares one) and attest it.
+        type: boolean
+        default: true
+    outputs:
+      files-checksums:
+        description: sha256sum-format checksums of the file outputs.
+        value: ${{ jobs.seal.outputs.files-checksums }}
+      image:
+        description: Pushed image reference, pinned by digest (empty if none).
+        value: ${{ jobs.seal.outputs.image }}
+
+permissions: {}
+
+# Caller inputs reach scripts only through env, never ${{ }} interpolation into
+# `run:`, so a crafted input cannot execute in the signing job.
+env:
+  ONION_OUT: /tmp/onion-out
+  MANIFEST: ${{ inputs.manifest }}
+
+jobs:
+  resolve:
+    name: resolve builder
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+    outputs:
+      repo: ${{ steps.who.outputs.repo }}
+      sha: ${{ steps.who.outputs.sha }}
+      cli-digest: ${{ steps.cli.outputs.digest }}
+    steps:
+      - name: Identify this reusable workflow's commit
+        id: who
+        # The OIDC token's job_workflow_ref/job_workflow_sha name the reusable
+        # workflow itself, not the caller. The CLI used to seal is built from
+        # exactly that commit, so the signer identity and the code agree.
+        run: |
+          token=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=build-onion" | jq -r .value)
+          claims=$(python3 -c 'import sys,json,base64; p=sys.argv[1].split(".")[1]; print(base64.urlsafe_b64decode(p+"="*(-len(p)%4)).decode())' "$token")
+          ref=$(jq -r .job_workflow_ref <<<"$claims")
+          sha=$(jq -r .job_workflow_sha <<<"$claims")
+          repo=${ref%%/.github/workflows/*}
+          [[ "$sha" =~ ^[0-9a-f]{40}$ && "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "unexpected claims: $ref $sha"; exit 1; }
+          echo "build-onion: $ref ($sha)"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.who.outputs.repo }}
+          ref: ${{ steps.who.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build onion CLI
+        id: cli
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o onion ./cmd/onion
+          echo "digest=$(sha256sum onion | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-cli
+          path: onion
+          if-no-files-found: error
+
+  validate:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      has_image: ${{ steps.plan.outputs.has_image }}
+      image_name: ${{ steps.plan.outputs.image_name }}
+      dockerfile: ${{ steps.plan.outputs.dockerfile }}
+      context: ${{ steps.plan.outputs.context }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-cli
+          path: ${{ runner.temp }}/bin
+      - name: Check onion CLI
+        run: |
+          echo "${{ needs.resolve.outputs.cli-digest }}  $RUNNER_TEMP/bin/onion" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/bin/onion"
+      - name: Source layer — building exactly the triggering commit
+        # GitHub's provenance records github.sha as the source. Building any
+        # other commit would make that record false, so refuse.
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Toolchain layer — manifest and pins
+        id: plan
+        run: '"$RUNNER_TEMP/bin/onion" validate --manifest "$MANIFEST" --github-output "$GITHUB_OUTPUT"'
+
+  fetch:
+    needs: [resolve, validate]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-cli
+          path: ${{ runner.temp }}/bin
+      - name: Dependency layer — fetch into the builder's cache
+        run: |
+          echo "${{ needs.resolve.outputs.cli-digest }}  $RUNNER_TEMP/bin/onion" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/bin/onion"
+          "$RUNNER_TEMP/bin/onion" fetch --manifest "$MANIFEST" --cache "$RUNNER_TEMP/deps"
+          tar -C "$RUNNER_TEMP/deps" -cf "$RUNNER_TEMP/deps.tar" .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-deps
+          path: ${{ runner.temp }}/deps.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    needs: [resolve, validate, fetch]
+    runs-on: ubuntu-24.04
+    # Deliberately no id-token: this job runs caller-controlled commands.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-cli
+          path: ${{ runner.temp }}/bin
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-deps
+          path: ${{ runner.temp }}
+      - name: Build layer — hermetic build, no network
+        run: |
+          echo "${{ needs.resolve.outputs.cli-digest }}  $RUNNER_TEMP/bin/onion" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/bin/onion"
+          mkdir -p "$RUNNER_TEMP/deps" && tar -C "$RUNNER_TEMP/deps" -xf "$RUNNER_TEMP/deps.tar"
+          "$RUNNER_TEMP/bin/onion" build --manifest "$MANIFEST" \
+            --cache "$RUNNER_TEMP/deps" --out "$ONION_OUT/files"
+      - if: needs.validate.outputs.has_image == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Package layer — reproducible OCI image
+        if: needs.validate.outputs.has_image == 'true'
+        env:
+          DOCKERFILE: ${{ needs.validate.outputs.dockerfile }}
+          CONTEXT: ${{ needs.validate.outputs.context }}
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          docker buildx build --network=none --platform linux/amd64 \
+            --provenance=false --sbom=false \
+            --output "type=oci,dest=$ONION_OUT/image.tar,rewrite-timestamp=true" \
+            -f "$DOCKERFILE" "$CONTEXT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-outputs
+          path: ${{ env.ONION_OUT }}
+          if-no-files-found: error
+
+  seal:
+    needs: [resolve, validate, build]
+    runs-on: ubuntu-24.04
+    # The only job that can sign. It runs build-onion's code and pinned
+    # actions only; caller-controlled commands never execute here.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
+    outputs:
+      files-checksums: ${{ steps.subjects.outputs.checksums }}
+      image: ${{ steps.push.outputs.image }}
+    env:
+      HAS_IMAGE: ${{ needs.validate.outputs.has_image }}
+      PUBLISH_IMAGE: ${{ inputs.publish-image }}
+      IMAGE_NAME: ${{ needs.validate.outputs.image_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-cli
+          path: ${{ runner.temp }}/bin
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-outputs
+          path: ${{ env.ONION_OUT }}
+      - name: Inventory layer — hash everything, trust nothing reported
+        id: subjects
+        run: |
+          echo "${{ needs.resolve.outputs.cli-digest }}  $RUNNER_TEMP/bin/onion" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/bin/onion"
+          image_args=()
+          [ "$HAS_IMAGE" = true ] && image_args=(--image-archive "$ONION_OUT/image.tar")
+          "$RUNNER_TEMP/bin/onion" inventory --manifest "$MANIFEST" \
+            --repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" --tree "$(git rev-parse 'HEAD^{tree}')" \
+            --files "$ONION_OUT/files" "${image_args[@]}" \
+            --invocation "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            > "$RUNNER_TEMP/inventory.json"
+          (cd "$ONION_OUT/files" && sha256sum -- *) > "$RUNNER_TEMP/files.sha256"
+          { echo 'checksums<<EOF'; cat "$RUNNER_TEMP/files.sha256"; echo EOF; } >> "$GITHUB_OUTPUT"
+          if [ "$HAS_IMAGE" = true ]; then
+            echo "image_digest=$("$RUNNER_TEMP/bin/onion" digest --oci "$ONION_OUT/image.tar")" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        id: syft
+      - name: Bottom-up SBOM of what was actually built
+        run: |
+          "${{ steps.syft.outputs.cmd }}" scan "dir:$ONION_OUT/files" -o "cyclonedx-json=$RUNNER_TEMP/files.cdx.json"
+          if [ "$HAS_IMAGE" = true ]; then
+            "${{ steps.syft.outputs.cmd }}" scan "oci-archive:$ONION_OUT/image.tar" -o "cyclonedx-json=$RUNNER_TEMP/image.cdx.json"
+          fi
+
+      # --- file outputs ---
+      - name: Seal files — SLSA provenance
+        id: files-prov
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/files.sha256
+      - name: Seal files — SBOM
+        id: files-sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/files.sha256
+          sbom-path: ${{ runner.temp }}/files.cdx.json
+      - name: Seal files — inventory
+        id: files-inv
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/files.sha256
+          predicate-type: https://github.com/PatterCJ/build-onion/inventory/v1
+          predicate-path: ${{ runner.temp }}/inventory.json
+
+      # --- image output ---
+      - name: Push image with its manifest bytes preserved
+        id: push
+        if: env.HAS_IMAGE == 'true' && env.PUBLISH_IMAGE == 'true'
+        env:
+          DIGEST: ${{ steps.subjects.outputs.image_digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          skopeo copy --preserve-digests "oci-archive:$ONION_OUT/image.tar" "docker://$IMAGE_NAME:sha-$GITHUB_SHA"
+          pushed=$(skopeo inspect --raw "docker://$IMAGE_NAME@$DIGEST" | sha256sum | cut -d' ' -f1)
+          test "sha256:$pushed" = "$DIGEST"
+          echo "image=$IMAGE_NAME@$DIGEST" >> "$GITHUB_OUTPUT"
+      - name: Seal image — SLSA provenance
+        id: image-prov
+        if: steps.push.outcome == 'success'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.subjects.outputs.image_digest }}
+          push-to-registry: true
+      - name: Seal image — SBOM
+        id: image-sbom
+        if: steps.push.outcome == 'success'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.subjects.outputs.image_digest }}
+          sbom-path: ${{ runner.temp }}/image.cdx.json
+          push-to-registry: true
+      - name: Seal image — inventory
+        id: image-inv
+        if: steps.push.outcome == 'success'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.subjects.outputs.image_digest }}
+          predicate-type: https://github.com/PatterCJ/build-onion/inventory/v1
+          predicate-path: ${{ runner.temp }}/inventory.json
+          push-to-registry: true
+
+      - name: Collect bundles for offline peeling
+        env:
+          IMAGE_REF: ${{ steps.push.outputs.image }}
+          BUNDLES: >-
+            ${{ steps.files-prov.outputs.bundle-path }}
+            ${{ steps.files-sbom.outputs.bundle-path }}
+            ${{ steps.files-inv.outputs.bundle-path }}
+            ${{ steps.image-prov.outputs.bundle-path }}
+            ${{ steps.image-sbom.outputs.bundle-path }}
+            ${{ steps.image-inv.outputs.bundle-path }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bundles"
+          i=0
+          for b in $BUNDLES; do i=$((i+1)); cp "$b" "$RUNNER_TEMP/bundles/$i.jsonl"; done
+          {
+            echo "### 🧅 build-onion sealed $(wc -l < "$RUNNER_TEMP/files.sha256") file(s)"
+            echo '```'; cat "$RUNNER_TEMP/files.sha256"; echo '```'
+            if [ -n "$IMAGE_REF" ]; then echo "Image: \`$IMAGE_REF\`"; fi
+            echo
+            echo "Peel it back: \`onion peel <artifact> --repo $GITHUB_REPOSITORY --commit $GITHUB_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-bundles
+          path: ${{ runner.temp }}/bundles
+          if-no-files-found: error
