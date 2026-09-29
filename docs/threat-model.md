@@ -36,6 +36,7 @@ build-onion is a claim about **where an artifact came from**. This page says pre
 | A malicious commit to a release branch | Not blocked by provenance alone, but surfaced: changes to workflows, the manifest, lockfiles, Dockerfile or policy are flagged in the signed inventory, and any commit-risk scan the pipeline runs is recorded against the source snapshot. `peel` shows sensitive changes as warnings. |
 | A file swapped only while the compiler reads it, then restored | The security line rebuilds from the same hashed inputs on its own runners and seals only if its bytes match the build line's. |
 | The build approving its own output | The build line has no signing rights. Only the security line seals, and only after its own rebuild matches; the publish line can't sign and releases only what `peel` verifies. |
+| A crafted build output exploiting the SBOM generator | The SBOM generator runs in its own job with no signing rights. The signing job only hashes outputs with build-onion's own code, checks that the SBOMs describe exactly those bytes, and never runs a third-party parser over build output. An exploit could corrupt an SBOM, but not sign anything. |
 | A scan report from another build attached to this one | Scan records must name this build's source snapshot or one of its output digests, or the security line refuses to seal. |
 | Build is not what the manifest says it is | **rebuild** layer replays the manifest and compares bytes. |
 

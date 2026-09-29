@@ -16,8 +16,11 @@
 # Jobs:
 #   resolve   pin this workflow's own build-onion commit (from OIDC) and build the CLI
 #   rebuild   independent fetch + hermetic build + image; compare with the build line
-#   seal      releasable builds only: inventory (source, pipeline, gate, rebuild,
-#             scan records), SBOM, and SLSA provenance, signed
+#   sbom      SBOMs of the rebuilt outputs. Kept out of seal: the SBOM generator
+#             parses bytes the caller's build produced, so it runs where
+#             there's nothing to sign with.
+#   seal      releasable builds only: inventory (source, pipeline, gate, egress,
+#             rebuild, scan records), SBOM, and SLSA provenance, signed
 name: onion-verify
 
 on:
@@ -189,12 +192,59 @@ jobs:
           path: /tmp/onion-rec
           if-no-files-found: error
 
-  seal:
+  sbom:
+    name: sbom
     needs: [resolve, rebuild]
+    runs-on: ubuntu-24.04
+    # Parses build output, so no signing rights here. The worst a malicious
+    # output can do to this job is corrupt its own SBOM.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-verify-cli
+          path: /tmp/onion-verify-bin
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-verified
+          path: ${{ env.VERIFIED }}
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        id: syft
+      - name: Bottom-up SBOM of what was actually built
+        env:
+          SYFT: ${{ steps.syft.outputs.cmd }}
+        run: |
+          out=$VERIFIED/out
+          mkdir -p /tmp/onion-sbom "$ONION_REC"
+          # Record exactly which bytes were scanned; seal checks them against its own copy.
+          (cd "$out" && find . -type f | LC_ALL=C sort | xargs sha256sum) > /tmp/onion-sbom/scanned.sha256
+          "$SYFT" scan "dir:$out/files" -o "cyclonedx-json=/tmp/onion-sbom/files.cdx.json"
+          if [ -f "$out/image.tar" ]; then
+            "$SYFT" scan "oci-archive:$out/image.tar" -o "cyclonedx-json=/tmp/onion-sbom/image.cdx.json"
+          fi
+          echo "${{ needs.resolve.outputs.cli-digest }}  $ONION" | sha256sum -c
+          chmod +x "$ONION"
+          "$ONION" record job --name sbom --runner "$ImageOS $ImageVersion" \
+            --tool syft="$("$SYFT" version -o json | jq -r .version)" --out "$ONION_REC/job-sbom.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-sbom
+          path: /tmp/onion-sbom
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-record-sbom
+          path: /tmp/onion-rec
+          if-no-files-found: error
+
+  seal:
+    needs: [resolve, rebuild, sbom]
     if: inputs.releasable == 'true'
     runs-on: ubuntu-24.04
     # The only job in build-onion that can sign. It runs build-onion's code and
-    # pinned actions only.
+    # pinned actions only, and never parses build output with third-party
+    # tools: onion's own Go code hashes it, and the SBOMs arrive as files.
     permissions:
       contents: read
       id-token: write
@@ -224,19 +274,20 @@ jobs:
           pattern: onion-record-*
           merge-multiple: true
           path: ${{ env.ONION_REC }}
-      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
-        id: syft
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-sbom
+          path: /tmp/onion-sbom
       - name: Inventory layer — hash everything, trust nothing reported
         id: subjects
-        env:
-          SYFT: ${{ steps.syft.outputs.cmd }}
         run: |
           echo "${{ needs.resolve.outputs.cli-digest }}  $ONION" | sha256sum -c
           chmod +x "$ONION"
           out=$VERIFIED/out snap=$VERIFIED/source.json cmp=$VERIFIED/rebuild.json egr=$VERIFIED/egress.json
-          "$ONION" record job --name seal --runner "$ImageOS $ImageVersion" \
-            --tool syft="$("$SYFT" version -o json | jq -r .version)" \
-            --out "$ONION_REC/job-seal.json"
+          # The SBOMs must describe exactly these bytes.
+          (cd "$out" && sha256sum --strict -c /tmp/onion-sbom/scanned.sha256)
+          test "$(cd "$out" && find . -type f | wc -l)" = "$(wc -l < /tmp/onion-sbom/scanned.sha256)"
+          "$ONION" record job --name seal --runner "$ImageOS $ImageVersion" --out "$ONION_REC/job-seal.json"
           image_args=()
           [ -f "$out/image.tar" ] && image_args=(--image-archive "$out/image.tar")
           "$ONION" inventory --manifest "$MANIFEST" \
@@ -250,11 +301,9 @@ jobs:
             > "$RUNNER_TEMP/inventory.json"
           (cd "$out/files" && sha256sum -- *) > "$RUNNER_TEMP/files.sha256"
           { echo 'checksums<<EOF'; cat "$RUNNER_TEMP/files.sha256"; echo EOF; } >> "$GITHUB_OUTPUT"
-          "$SYFT" scan "dir:$out/files" -o "cyclonedx-json=$RUNNER_TEMP/files.cdx.json"
           if [ -f "$out/image.tar" ]; then
             echo "image_digest=$("$ONION" digest --oci "$out/image.tar")" >> "$GITHUB_OUTPUT"
             echo "image_name=$(jq -r '.outputs[] | select(.kind=="oci-image") | .name' "$RUNNER_TEMP/inventory.json")" >> "$GITHUB_OUTPUT"
-            "$SYFT" scan "oci-archive:$out/image.tar" -o "cyclonedx-json=$RUNNER_TEMP/image.cdx.json"
           fi
 
       # --- file outputs ---
@@ -268,7 +317,7 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: ${{ runner.temp }}/files.sha256
-          sbom-path: ${{ runner.temp }}/files.cdx.json
+          sbom-path: /tmp/onion-sbom/files.cdx.json
       - name: Seal files — inventory
         id: files-inv
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -292,7 +341,7 @@ jobs:
         with:
           subject-name: ${{ steps.subjects.outputs.image_name }}
           subject-digest: ${{ steps.subjects.outputs.image_digest }}
-          sbom-path: ${{ runner.temp }}/image.cdx.json
+          sbom-path: /tmp/onion-sbom/image.cdx.json
       - name: Seal image — inventory
         id: image-inv
         if: steps.subjects.outputs.image_digest != ''

@@ -253,10 +253,17 @@ func (m *Manifest) Writable() []string {
 // IsPinnedImage reports whether ref names an image by immutable digest.
 func IsPinnedImage(ref string) bool { return pinnedImageRe.MatchString(ref) }
 
+// safePathRe limits manifest paths to characters that survive checksum files,
+// artifact names and shell arguments unchanged: no spaces, quotes, newlines or
+// glob characters.
+var safePathRe = regexp.MustCompile(`^[A-Za-z0-9._+/-]+$`)
+
 func checkRelPath(p string) error {
 	switch {
 	case p == "":
 		return errors.New("empty path")
+	case !safePathRe.MatchString(p):
+		return fmt.Errorf("%q may only contain letters, digits and . _ + / -", p)
 	case path.IsAbs(p):
 		return fmt.Errorf("%q must be relative to the repo root", p)
 	case p != "." && path.Clean(p) != p:
