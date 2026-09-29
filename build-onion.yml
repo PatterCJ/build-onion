@@ -9,9 +9,17 @@ builder:
 
 dependencies:
   lockfiles: [go.sum]
-  # Runs with network. go mod verify checks every module against go.sum.
+  # Runs behind the egress proxy. go mod verify checks every module against go.sum.
   fetch: go mod download && go mod verify
   cache: /go/pkg/mod
+  env:
+    GOTOOLCHAIN: local
+    GOFLAGS: -mod=readonly
+  # The only hosts fetch can reach. Anything else fails the build.
+  # proxy.golang.org redirects module zips to storage.googleapis.com.
+  egress:
+    - host: proxy.golang.org
+    - host: storage.googleapis.com
 
 build:
   # Runs with --network none against the fetched module cache.

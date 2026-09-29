@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/PatterCJ/build-onion/internal/digest"
+	"github.com/PatterCJ/build-onion/internal/egress"
+	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
 )
 
@@ -177,6 +179,56 @@ func TestPipelineRecords(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "bad.json"), []byte(`{"kind":"job","extra":1}`), 0o644)
 	if _, err := ReadPipeline(dir, "x"); err == nil {
 		t.Error("record with unknown field accepted")
+	}
+}
+
+func TestGenerateEgress(t *testing.T) {
+	src, snap := gitSource(t)
+	files := t.TempDir()
+	os.WriteFile(filepath.Join(files, "widget"), []byte("binary"), 0o755)
+
+	// No allow-list in the manifest: fetch was unrestricted, and it says so.
+	inv, _, err := Generate(params(src, snap, files))
+	if err != nil || inv.Egress == nil || inv.Egress.Mode != egress.ModeUnrestricted {
+		t.Fatalf("unrestricted: %+v, %v", inv.Egress, err)
+	}
+
+	// A record claiming a restricted fetch doesn't match this manifest.
+	p := params(src, snap, files)
+	p.Egress = &egress.Record{Mode: egress.ModeAllowList, Rules: []manifest.EgressRule{{Host: "proxy.golang.org"}}, Summary: &egress.Summary{}}
+	if _, _, err := Generate(p); err == nil {
+		t.Error("allow-list record accepted for a manifest without one")
+	}
+}
+
+func TestEgressRecordCheck(t *testing.T) {
+	m := &manifest.Manifest{Dependencies: manifest.Dependencies{Fetch: "go mod download",
+		Egress: []manifest.EgressRule{{Host: "proxy.golang.org"}, {Host: "sum.golang.org"}}}}
+	good := func() *egress.Record {
+		return &egress.Record{Mode: egress.ModeAllowList, Rules: m.Dependencies.Egress, Summary: &egress.Summary{
+			Connections: []egress.Connection{{Host: "proxy.golang.org", Port: 443, Allowed: true, Count: 3}}}}
+	}
+	if err := good().Check(m); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]func(*egress.Record){
+		"ran unrestricted": func(r *egress.Record) { r.Mode = egress.ModeUnrestricted },
+		"different rules":  func(r *egress.Record) { r.Rules = []manifest.EgressRule{{Host: "proxy.golang.org"}} },
+		"no log":           func(r *egress.Record) { r.Summary = nil },
+		"a denial": func(r *egress.Record) {
+			r.Summary.Connections = append(r.Summary.Connections, egress.Connection{Host: "evil.example.net", Port: 443})
+			r.Summary.Denied = 1
+		},
+		"allowed but unmatched": func(r *egress.Record) {
+			r.Summary.Connections = append(r.Summary.Connections, egress.Connection{Host: "other.example.net", Port: 443, Allowed: true})
+		},
+	}
+	for name, mutate := range cases {
+		r := good()
+		mutate(r)
+		if r.Check(m) == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }
 

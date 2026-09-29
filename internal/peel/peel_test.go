@@ -15,8 +15,10 @@ import (
 
 	"github.com/PatterCJ/build-onion/internal/attest"
 	"github.com/PatterCJ/build-onion/internal/digest"
+	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/inventory"
+	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/verify"
 )
@@ -96,6 +98,14 @@ func newWorld() *world {
 				Jobs: []inventory.Job{{Name: "build", Runner: "ubuntu24 20260921.1"}},
 			},
 			Gate: &gate.Verdict{Releasable: true, Reason: "push on refs/heads/main", ChangeKnown: true, ChangedFiles: 2},
+			Egress: &egress.Record{
+				Mode:       egress.ModeAllowList,
+				Rules:      []manifest.EgressRule{{Host: "proxy.golang.org"}},
+				ProxyImage: "gcr.io/distroless/static-debian12:nonroot@sha256:" + strings.Repeat("e", 64),
+				Summary: &egress.Summary{Connections: []egress.Connection{
+					{Host: "proxy.golang.org", Port: 443, Allowed: true, Count: 12, BytesIn: 4 << 20},
+				}},
+			},
 			Verification: &inventory.Verification{
 				Rebuild: &verify.Rebuild{Runner: "ubuntu24 20260921.1", Matched: true, Outputs: []verify.Match{
 					{Kind: "file", Name: "widget", Staged: artifactDigest, Rebuilt: artifactDigest, Match: true},
@@ -253,6 +263,37 @@ func TestPeelGrades(t *testing.T) {
 		"gate verdict missing": {
 			world: func(w *world) { w.inv.Gate = nil },
 			want:  "FAILED gate/gate verdict recorded", verdict: Failed,
+		},
+		"fetch had unrestricted network": {
+			world: func(w *world) { w.inv.Egress = &egress.Record{Mode: egress.ModeUnrestricted} },
+			want:  "DEGRADED egress/fetch network", verdict: Degraded,
+		},
+		"egress never recorded": {
+			world: func(w *world) { w.inv.Egress = nil },
+			want:  "DEGRADED egress/fetch network", verdict: Degraded,
+		},
+		"fetch reached an undeclared host": {
+			world: func(w *world) {
+				w.inv.Egress.Summary.Connections = append(w.inv.Egress.Summary.Connections,
+					egress.Connection{Host: "exfil.example.net", Port: 443, Allowed: false, Count: 1, Reason: "not in dependencies.egress"})
+				w.inv.Egress.Summary.Denied = 1
+			},
+			want: "FINDING egress/fetch connections", verdict: Finding,
+		},
+		"allowed connection outside the rules": {
+			world: func(w *world) {
+				w.inv.Egress.Summary.Connections = append(w.inv.Egress.Summary.Connections,
+					egress.Connection{Host: "storage.googleapis.com", Port: 443, Allowed: true, Count: 1})
+			},
+			want: "FINDING egress/fetch connections", verdict: Finding,
+		},
+		"proxy image not pinned": {
+			world: func(w *world) { w.inv.Egress.ProxyImage = "gcr.io/distroless/static:latest" },
+			want:  "FINDING egress/proxy pinned by digest", verdict: Finding,
+		},
+		"allow-list without a log": {
+			world: func(w *world) { w.inv.Egress.Summary = nil },
+			want:  "FAILED egress/fetch connections", verdict: Failed,
 		},
 		"security line missing": {
 			world: func(w *world) { w.inv.Verification = nil },

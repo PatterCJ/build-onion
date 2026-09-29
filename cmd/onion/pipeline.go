@@ -10,8 +10,10 @@ import (
 	"strings"
 
 	"github.com/PatterCJ/build-onion/internal/digest"
+	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/inventory"
+	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/policy"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/verify"
@@ -321,4 +323,32 @@ func cmdCompare(args []string) error {
 		return errors.New("independent rebuild differs from the build line: the build environment changed the output")
 	}
 	return nil
+}
+
+// onion proxy: the egress proxy. It runs inside a minimal container as the
+// fetch step's only route out; see internal/egress.
+func cmdProxy(args []string) error {
+	fs := flag.NewFlagSet("proxy", flag.ExitOnError)
+	listen := fs.String("listen", "127.0.0.1:3128", "address to listen on")
+	rulesPath := fs.String("rules", "", "JSON array of egress rules (required)")
+	logPath := fs.String("log", "", "append one JSON line per connection attempt here (required)")
+	fs.Parse(args)
+	if *rulesPath == "" || *logPath == "" {
+		return errors.New("--rules and --log are required")
+	}
+	var rules []manifest.EgressRule
+	if err := readJSON(*rulesPath, &rules); err != nil {
+		return err
+	}
+	// Rules get the same validation a manifest would.
+	m := manifest.Manifest{Dependencies: manifest.Dependencies{Fetch: "x", Egress: rules}}
+	if err := m.ValidateEgress(); err != nil {
+		return err
+	}
+	log, err := os.OpenFile(*logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer log.Close()
+	return egress.Serve(*listen, &egress.Proxy{Rules: rules, Log: log}, os.Stdout)
 }

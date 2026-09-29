@@ -21,6 +21,7 @@ import (
 
 	"github.com/PatterCJ/build-onion/internal/attest"
 	"github.com/PatterCJ/build-onion/internal/digest"
+	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
@@ -227,6 +228,7 @@ func Run(in Input) *Report {
 		r.check("inventory", "build ran without network", inv.Build.Network == "none", Finding, "network %q", inv.Build.Network)
 		r.check("inventory", "inputs locked", len(inv.Lockfiles) > 0, Finding, "%d lockfile(s), %d locked dependencies", len(inv.Lockfiles), len(inv.Dependencies))
 		checkGate(r, &inv)
+		checkEgress(r, &inv)
 		checkVerification(r, &inv, in.Digest)
 		checkPipeline(r, &inv)
 		checkScans(r, &inv)
@@ -307,6 +309,48 @@ func checkGate(r *Report, inv *inventory.Inventory) {
 		// context does. Tag pushes and first pushes have no diff base.
 		r.grade("gate", "change set", Note, "not computed; no previous build point to diff against")
 	}
+}
+
+// checkEgress grades the fetch step's network: an allow-list with every
+// connection declared passes; unrestricted network is a coverage gap; any
+// denied or unexplained connection is a finding.
+func checkEgress(r *Report, inv *inventory.Inventory) {
+	e := inv.Egress
+	switch {
+	case e == nil:
+		r.grade("egress", "fetch network", Degraded, "not recorded; this inventory predates egress recording")
+		return
+	case e.Mode == egress.ModeNone:
+		r.grade("egress", "fetch network", Passed, "no fetch step")
+		return
+	case e.Mode == egress.ModeUnrestricted:
+		r.grade("egress", "fetch network", Degraded, "fetch had unrestricted network; declare dependencies.egress to restrict and record it")
+		return
+	case e.Mode != egress.ModeAllowList:
+		r.grade("egress", "fetch network", Unsupported, "unknown egress mode %q", e.Mode)
+		return
+	}
+	r.check("egress", "proxy pinned by digest", manifest.IsPinnedImage(e.ProxyImage), Finding, "%s", e.ProxyImage)
+	if e.Summary == nil {
+		r.grade("egress", "fetch connections", Failed, "allow-list mode without a connection log")
+		return
+	}
+	hosts := map[string]bool{}
+	var total int
+	for _, c := range e.Summary.Connections {
+		hosts[fmt.Sprintf("%s:%d", c.Host, c.Port)] = true
+		total += c.Count
+	}
+	if err := e.Summary.CheckAgainst(e.Rules); err != nil {
+		r.grade("egress", "fetch connections", Finding, "%v", err)
+		return
+	}
+	var declared []string
+	for _, rule := range e.Rules {
+		declared = append(declared, fmt.Sprintf("%s:%d", rule.Host, rule.EffectivePort()))
+	}
+	r.grade("egress", "fetch connections", Passed, "%d connection(s) to %d destination(s), all within the allow-list (%s)",
+		total, len(hosts), strings.Join(declared, ", "))
 }
 
 // checkVerification reads the security line's record: an independent rebuild

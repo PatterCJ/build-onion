@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/PatterCJ/build-onion/internal/digest"
+	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/lint"
 	"github.com/PatterCJ/build-onion/internal/manifest"
@@ -40,6 +41,9 @@ type Inventory struct {
 	// Verification is the security line's result: the independent rebuild.
 	// Present on everything the security line seals.
 	Verification *Verification `json:"verification,omitempty"`
+	// Egress is the network the fetch step had, and every connection it made
+	// when it ran behind the egress proxy.
+	Egress *egress.Record `json:"egress,omitempty"`
 }
 
 type Verification struct {
@@ -115,6 +119,9 @@ type Params struct {
 	Pipeline     Pipeline
 	Gate         *gate.Verdict
 	Verification *Verification
+	// Egress is the fetch network record from the fetch whose cache produced
+	// these outputs. Required when the manifest declares an allow-list.
+	Egress *egress.Record
 }
 
 // Generate builds the inventory. It hashes everything itself; it never trusts
@@ -130,6 +137,20 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 	if err := checkSnapshot(p); err != nil {
 		return nil, nil, err
 	}
+	egressRec := p.Egress
+	if egressRec == nil {
+		switch {
+		case m.Dependencies.Fetch == "":
+			egressRec = &egress.Record{Mode: egress.ModeNone}
+		case len(m.Dependencies.Egress) == 0:
+			egressRec = &egress.Record{Mode: egress.ModeUnrestricted}
+		default:
+			return nil, nil, errors.New("the manifest declares an egress allow-list, but no egress record was given; the fetch network can't be vouched for")
+		}
+	}
+	if err := egressRec.Check(m); err != nil {
+		return nil, nil, fmt.Errorf("egress: %w", err)
+	}
 	if v := p.Verification; v != nil {
 		if v.Rebuild == nil || !v.Rebuild.Matched {
 			return nil, nil, errors.New("independent rebuild did not match the build line; refusing to inventory for sealing")
@@ -142,6 +163,7 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		Pipeline:     p.Pipeline,
 		Gate:         p.Gate,
 		Verification: p.Verification,
+		Egress:       egressRec,
 		Builder:      Builder{Image: m.Builder.Image},
 		Build: Build{
 			Fetch:   m.Dependencies.Fetch,

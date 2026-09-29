@@ -39,6 +39,28 @@ func TestValid(t *testing.T) {
 	}
 }
 
+func TestEgressAccepted(t *testing.T) {
+	src := strings.Replace(valid, "  cache: /go/pkg/mod\n", `  cache: /go/pkg/mod
+  env: {GOPROXY: "https://artifactory.acme.internal/go"}
+  egress:
+    - host: proxy.golang.org
+    - host: "*.googleusercontent.com"
+    - host: artifactory.acme.internal
+      port: 8443
+      private: true
+`, 1)
+	m, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Dependencies.Egress) != 3 || m.Dependencies.Egress[0].EffectivePort() != 443 || !m.Dependencies.Egress[2].Private {
+		t.Fatalf("egress = %+v", m.Dependencies.Egress)
+	}
+}
+
 func TestUnknownFieldRejected(t *testing.T) {
 	if _, err := Parse([]byte(valid + "extra: true\n")); err == nil {
 		t.Fatal("unknown top-level key accepted")
@@ -55,6 +77,13 @@ func TestInvalid(t *testing.T) {
 		"relative cache":      {"cache: /go/pkg/mod", "cache: go/pkg/mod", "absolute path"},
 		"image with tag":      {"ghcr.io/example/demo", "ghcr.io/example/demo:latest", "outputs.image.name"},
 		"empty run":           {"run: go build -o dist/demo .", "run: \"\"", "build.run"},
+		"egress IP literal":   {"  cache: /go/pkg/mod\n", "  cache: /go/pkg/mod\n  egress: [{host: 10.0.0.5}]\n", "no IP addresses"},
+		"egress with scheme":  {"  cache: /go/pkg/mod\n", "  cache: /go/pkg/mod\n  egress: [{host: 'https://proxy.golang.org'}]\n", "lowercase DNS name"},
+		"egress uppercase":    {"  cache: /go/pkg/mod\n", "  cache: /go/pkg/mod\n  egress: [{host: Proxy.Golang.org}]\n", "lowercase DNS name"},
+		"egress bare TLD":     {"  cache: /go/pkg/mod\n", "  cache: /go/pkg/mod\n  egress: [{host: localhost}]\n", "lowercase DNS name"},
+		"egress duplicate":    {"  cache: /go/pkg/mod\n", "  cache: /go/pkg/mod\n  egress: [{host: a.example.com}, {host: a.example.com, port: 443}]\n", "listed twice"},
+		"egress bad port":     {"  cache: /go/pkg/mod\n", "  cache: /go/pkg/mod\n  egress: [{host: a.example.com, port: 70000}]\n", "out of range"},
+		"proxy env override":  {"  cache: /go/pkg/mod\n", "  cache: /go/pkg/mod\n  env: {https_proxy: http://evil:1}\n", "can't be overridden"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

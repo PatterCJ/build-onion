@@ -22,6 +22,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/attest"
 	"github.com/PatterCJ/build-onion/internal/builder"
 	"github.com/PatterCJ/build-onion/internal/digest"
+	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/lint"
@@ -42,7 +43,7 @@ Usage:
   onion validate  [--source DIR] [--manifest FILE]
   onion source    snapshot --out FILE | verify --snapshot FILE [--expect DIGEST]
   onion gate      --snapshot FILE --event E --ref REF [--policy FILE] [--base SHA] [--out FILE]
-  onion fetch     [--source DIR] [--manifest FILE] --cache DIR [--snapshot FILE]
+  onion fetch     [--source DIR] [--manifest FILE] --cache DIR [--snapshot FILE] [--egress-out FILE]
   onion build     [--source DIR] [--manifest FILE] --cache DIR --out DIR [--snapshot FILE]
   onion record    job|workflow|build-onion|scan --out FILE [flags]
   onion compare   --staged DIR --rebuilt DIR [--out FILE]
@@ -63,6 +64,7 @@ func main() {
 		"gate":      cmdGate,
 		"record":    cmdRecord,
 		"compare":   cmdCompare,
+		"proxy":     cmdProxy,
 		"fetch":     cmdFetch,
 		"build":     cmdBuild,
 		"digest":    cmdDigest,
@@ -142,6 +144,7 @@ func cmdFetch(args []string) error {
 	s.register(fs)
 	cache := fs.String("cache", "", "dependency cache directory to populate")
 	snap := fs.String("snapshot", "", "verify the source against this snapshot before and after")
+	egressOut := fs.String("egress-out", "", "write the fetch network record (mode, rules, connections) here")
 	fs.Parse(args)
 	if *cache == "" {
 		return errors.New("--cache is required")
@@ -150,9 +153,37 @@ func cmdFetch(args []string) error {
 	if err != nil {
 		return err
 	}
-	return guarded(s.source, *snap, m, func() error {
-		return builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Fetch(s.source, *cache, m)
+	var rec *egress.Record
+	err = guarded(s.source, *snap, m, func() error {
+		var ferr error
+		rec, ferr = builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Fetch(s.source, *cache, m)
+		return ferr
 	})
+	// Written even when fetch failed: the record of what was attempted is
+	// the evidence.
+	if rec != nil {
+		printEgress(rec)
+		if *egressOut != "" {
+			if werr := writeJSON(*egressOut, rec); werr != nil && err == nil {
+				err = werr
+			}
+		}
+	}
+	return err
+}
+
+func printEgress(rec *egress.Record) {
+	fmt.Fprintf(os.Stderr, "egress: %s\n", rec.Mode)
+	if rec.Summary == nil {
+		return
+	}
+	for _, c := range rec.Summary.Connections {
+		verdict := "allowed"
+		if !c.Allowed {
+			verdict = "DENIED"
+		}
+		fmt.Fprintf(os.Stderr, "egress: %-7s %s:%d ×%d  out %d B  in %d B  %s\n", verdict, c.Host, c.Port, c.Count, c.BytesOut, c.BytesIn, c.Reason)
+	}
 }
 
 // guarded runs step between two source verifications, so anything the step
@@ -245,6 +276,7 @@ func cmdInventory(args []string) error {
 	platform := fs.String("platform", "local", "CI platform name")
 	gatePath := fs.String("gate", "", "gate verdict JSON from `onion gate`")
 	rebuildPath := fs.String("rebuild", "", "comparison JSON from `onion compare`")
+	egressPath := fs.String("egress", "", "fetch network record from `onion fetch --egress-out`")
 	fs.Parse(args)
 	if p.Repository == "" || p.Commit == "" || p.Tree == "" || p.FilesDir == "" || *snapPath == "" || *records == "" {
 		return errors.New("--repository, --commit, --tree, --files, --snapshot and --records are required")
@@ -259,6 +291,12 @@ func cmdInventory(args []string) error {
 	if *gatePath != "" {
 		p.Gate = new(gate.Verdict)
 		if err := readJSON(*gatePath, p.Gate); err != nil {
+			return err
+		}
+	}
+	if *egressPath != "" {
+		p.Egress = new(egress.Record)
+		if err := readJSON(*egressPath, p.Egress); err != nil {
 			return err
 		}
 	}

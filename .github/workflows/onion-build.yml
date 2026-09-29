@@ -242,11 +242,19 @@ jobs:
           echo "${{ needs.resolve.outputs.cli-digest }}  $ONION" | sha256sum -c
           chmod +x "$ONION"
           "$ONION" source verify --manifest "$MANIFEST" --snapshot /tmp/onion-snap/source.json --expect "$SNAPSHOT"
-          "$ONION" fetch --manifest "$MANIFEST" --snapshot /tmp/onion-snap/source.json --cache "$RUNNER_TEMP/deps"
+          "$ONION" fetch --manifest "$MANIFEST" --snapshot /tmp/onion-snap/source.json --cache "$RUNNER_TEMP/deps" \
+            --egress-out /tmp/onion-egress/build-line.json
           tar -C "$RUNNER_TEMP/deps" -cf "$RUNNER_TEMP/deps.tar" .
           mkdir -p "$ONION_REC"
           "$ONION" record job --name fetch --runner "$ImageOS $ImageVersion" \
             --tool docker="$(docker version --format '{{.Server.Version}}')" --out "$ONION_REC/job-fetch.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        # Kept even when fetch fails: denied attempts are the evidence.
+        if: always()
+        with:
+          name: onion-egress-build-line
+          path: /tmp/onion-egress
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: onion-deps

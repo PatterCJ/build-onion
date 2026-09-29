@@ -21,6 +21,8 @@ build-onion is a claim about **where an artifact came from**. This page says pre
 | Build step tries to sign something itself | The build job has no `id-token` permission; it cannot obtain a Sigstore certificate. |
 | Caller input crafted to inject commands into the signing job | Inputs reach scripts only through environment variables; the manifest is parsed, never executed, in `seal`. |
 | Build reaches the network to pull an unpinned tool or exfiltrate | Build runs with `--network none`. |
+| Fetch reaches an undeclared host (a malicious install script calling home, a dependency confusion download) | With `dependencies.egress`, fetch's only route out is the egress proxy. Any undeclared host fails the fetch, and every connection is recorded in the sealed inventory. |
+| Fetch reaching cloud metadata or the runner itself | Loopback, link-local (169.254.169.254) and multicast are never reachable. Private ranges need an explicit `private: true`. The proxy resolves names itself and connects to the address it checked. |
 | Mutable references repointed (tags, `latest`) | Builder image, `FROM` lines, and actions must be pinned by digest/SHA or `validate` fails. |
 | A dependency linked into the artifact that the lockfile never declared | **dependencies** layer: SBOM of the artifact ⊆ lockfile. |
 | Provenance, SBOM, and inventory stitched together from different runs | **seal** layer requires one run invocation behind all three; inventory must name the same run as provenance. |
@@ -39,7 +41,8 @@ build-onion is a claim about **where an artifact came from**. This page says pre
 
 - **A compromise of both build environments at once.** The independent rebuild catches an environment that alters output, unless the same compromise affects the security line's runners too. Pointing `onion-verify.yml`'s `runs-on` at separate infrastructure narrows this.
 - **Build behavior.** build-onion checks what a build consumed and produced, not what it did along the way (processes, files touched, connections). Observed-behavior recording is on the roadmap.
-- **Build line network.** Until the egress proxy (Phase C) lands, the fetch step can reach any host. The build step already has no network; the fetch step has no signing credentials and is constrained by lockfile verification.
+- **Unrestricted fetch.** A manifest without `dependencies.egress` gives fetch full network. `peel` reports it as DEGRADED rather than clean.
+- **Shared hosts on the allow-list.** The proxy filters by host name and doesn't intercept TLS. On a shared host such as `storage.googleapis.com`, it can't tell one tenant's bucket from another's, so data could be sent to an attacker's bucket there. An artifact store you control narrows this to a host you trust.
 - **Malicious code at the commit.** If the commit itself contains a backdoor, build-onion faithfully proves the backdoor was built from that commit. Provenance is not code review — pair it with review and scanning.
 - **A compromised dependency that *is* in the lockfile.** Lockfiles pin bytes, not intent. The fetch step runs `go mod verify` against `go.sum`, but a malicious version you locked is still malicious.
 - **Compromised GitHub, Sigstore, or build-onion itself.** These are the trust root. Pin build-onion by commit and review updates.

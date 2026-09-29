@@ -29,7 +29,7 @@ func Rebuild(dir string, m *manifest.Manifest, output string) (string, error) {
 	}
 	r := builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}
 	cache := filepath.Join(tmp, "cache")
-	if err := r.Fetch(src, cache, m); err != nil {
+	if _, err := r.Fetch(src, cache, m); err != nil {
 		return "", err
 	}
 	if err := r.Build(src, cache, m); err != nil {

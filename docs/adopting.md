@@ -8,7 +8,9 @@ The manifest is the whole contract. Anything not declared is not available to th
 |---|---|
 | `builder.image` | Pinned by digest. Every fetch and build step runs in it. |
 | `dependencies.lockfiles` | Hashed into the inventory. `go.sum` is also parsed for the dependency cross-check. |
-| `dependencies.fetch` / `cache` | `fetch` runs **with network** and must populate `cache` (a path inside the builder). The cache is then the only third-party input the build sees. |
+| `dependencies.fetch` / `cache` | `fetch` must populate `cache` (a path inside the builder). The cache is then the only third-party input the build sees. |
+| `dependencies.egress` | The only hosts `fetch` may reach, each with an optional `port` (default 443) and `private: true` if it lives on a private network. See [Restricting fetch](#restricting-fetch). Without it, fetch has unrestricted network and `peel` reports that as DEGRADED. |
+| `dependencies.env` | Environment for `fetch` only, typically pointing a package manager at your artifact store. |
 | `build.run` / `env` | Runs with `--network none`, as your UID, with `HOME=/tmp`. `env` applies to this step only, not to `fetch`. |
 | `build.scratch` | Other paths `fetch` or `build` may create in the tree (`node_modules`, `build/`). Any other new file fails the build. |
 | `outputs.files` | Must not exist in the source; they must be produced by the build. |
@@ -40,6 +42,44 @@ dependencies:
 build:
   run: pip wheel --no-index --find-links /wheels --no-deps -w dist .
 ```
+
+### Restricting fetch
+
+With `dependencies.egress` set, the fetch container runs on a Docker network with **no route out**. Its only reachable peer is build-onion's egress proxy, which runs in a pinned distroless image with a read-only filesystem and no capabilities.
+
+- **What gets through:** HTTPS goes through `CONNECT` and plain HTTP is forwarded, but only to listed hosts and ports.
+- **How the check works:** the proxy resolves each host itself and connects to the address it checked. IP addresses are refused outright.
+- **Addresses that are always blocked:** loopback, link-local (including the cloud metadata address `169.254.169.254`) and multicast.
+- **Private addresses** (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7) are reachable only when the rule says `private: true`.
+- **What the fetch container can't do:** it can't resolve external names itself, so tools that ignore the proxy variables get no network.
+- **What happens on a violation:** any attempt to reach anything else **fails the fetch**, and the log names the host.
+
+Every connection (host, port, allowed or denied, bytes each way) is recorded. The security line's record is sealed into the inventory.
+
+```yaml
+dependencies:
+  lockfiles: [go.sum]
+  fetch: go mod download && go mod verify
+  cache: /go/pkg/mod
+  egress:
+    - host: proxy.golang.org
+    - host: storage.googleapis.com   # proxy.golang.org redirects module zips here
+```
+
+With an internal artifact store, point the package manager at it and allow only the store:
+
+```yaml
+  env:
+    GOPROXY: https://artifactory.acme.internal/api/go/go-remote
+    GONOSUMDB: "*"
+  egress:
+    - host: artifactory.acme.internal
+      private: true
+```
+
+The allow-list works on host names. It doesn't intercept TLS, so it can't tell apart paths or tenants on a shared host like `storage.googleapis.com`. An artifact store you control gives the tightest boundary.
+
+To find out what a tool needs, run the fetch with a minimal list. The failure message names each denied host.
 
 ## 2. Make it reproducible
 

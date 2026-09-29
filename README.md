@@ -55,6 +55,8 @@ Each line resolves and builds its own `onion` CLI from the exact build-onion com
 | **Toolchain** | The builder image and every `FROM` are pinned by digest, and every action by commit SHA, or the build fails. |
 | **Gate** | Only release refs and events are sealed. Pull requests, feature branches and forks build but are never signed. `pull_request_target` and `workflow_run` are refused outright. Changes to workflows, the manifest, lockfiles, the Dockerfile or the policy are flagged. |
 | **Dependencies** | Fetched separately and verified against the lockfile. The build sees only that cache. |
+| **Egress** | With an allow-list, fetch's only route out is a filtering proxy: undeclared hosts fail the build, metadata and loopback addresses are unreachable, and every connection is sealed into the inventory. Without one, `peel` reports fetch's network as DEGRADED. |
+| **Egress** | With an allow-list, fetch's only route out is a filtering proxy: undeclared hosts fail the build, metadata and loopback addresses are unreachable, and every connection is sealed into the inventory. Without one, `peel` reports fetch's network as DEGRADED. |
 | **Rebuild** | The security line reproduces the build from the same hashed inputs. A file swapped only while the compiler read it, then restored, still changes the bytes. |
 | **Pipeline** | The build-onion commit and CLI digest, every workflow with every action it pins, each job's runner image and tool versions, and every recorded scan. |
 | **Seal** | SLSA v1 provenance, a CycloneDX SBOM of what was actually built, and the inventory, signed by the security line's identity. |
@@ -78,7 +80,8 @@ $ onion peel ghcr.io/pattercj/build-onion@sha256:… --repo PatterCJ/build-onion
 | **seal** | Every Sigstore bundle verifies. The signer is the security line, the certificate's repo and commit match the claim, and one run signed provenance, SBOM and inventory. |
 | **provenance** | SLSA v1, the builder is build-onion, a hosted runner, and the repo and commit match. |
 | **inventory** | Same commit and run; the artifact is a declared output; the builder is pinned; the build had no network; inputs are locked. |
-| **gate** | The gate allowed release. Sensitive changes are shown as warnings. |
+| **gate** | The gate allowed release. Sensitive changes are shown as notes. |
+| **egress** | Fetch ran behind the allow-list, and every recorded connection was declared. |
 | **verification** | The independent rebuild produced this exact digest. |
 | **pipeline** | The builder commit is recorded, every action is pinned, and job toolchains are recorded. |
 | **scans** | Each recorded scan: tool, stage, times, report digest, that it examined *this* build, and whether it completed. |
@@ -122,7 +125,7 @@ build-onion's defensible claim: it verifies declared build inputs, records what 
 - [x] Pipeline inventory: builder commit, workflows and actions, runner images and tools, scan records
 - [x] Separate build, security and publish lines; independent rebuild before signing; publish gated on `peel`
 - [x] Graded results: passed, degraded, unsupported, finding and failed, so incomplete analysis is never reported as clean
-- [ ] **Restricted egress:** fetch through an allow-list proxy to a configured artifact store (Artifactory, Nexus, GitHub Packages, …), recording every blocked attempt
+- [x] Restricted egress: fetch's only route out is an allow-list proxy (to a public registry or your artifact store), with every connection recorded
 - [ ] **Observed build execution:** process tree, executed binaries, files touched and network connections, compared against the manifest
 - [ ] **Toolchain baseline:** protected, versioned profiles of what compilers and build tools normally do
 - [ ] **Artifact peeling:** filesystem inventory, permissions and privileged bits, entrypoints, trust-store changes

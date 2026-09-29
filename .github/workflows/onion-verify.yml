@@ -53,7 +53,7 @@ env:
   ONION: /tmp/onion-verify-bin/onion
   STAGED: /tmp/onion-staged
   # Everything the security line produces and seals lives under one directory:
-  # out/ (files/, image.tar), source.json, rebuild.json.
+  # out/ (files/, image.tar), source.json, egress.json, rebuild.json.
   VERIFIED: /tmp/onion-verified
   ONION_REC: /tmp/onion-rec
   MANIFEST: ${{ inputs.manifest }}
@@ -146,7 +146,8 @@ jobs:
       - name: Rebuild — fetch and hermetic build from the same hashed inputs
         run: |
           "$ONION" validate --manifest "$MANIFEST" --github-output "$GITHUB_OUTPUT"
-          "$ONION" fetch --manifest "$MANIFEST" --snapshot "$VERIFIED/source.json" --cache "$RUNNER_TEMP/deps"
+          "$ONION" fetch --manifest "$MANIFEST" --snapshot "$VERIFIED/source.json" --cache "$RUNNER_TEMP/deps" \
+            --egress-out "$VERIFIED/egress.json"
           "$ONION" build --manifest "$MANIFEST" --snapshot "$VERIFIED/source.json" \
             --cache "$RUNNER_TEMP/deps" --out "$VERIFIED/out/files"
         id: plan
@@ -232,7 +233,7 @@ jobs:
         run: |
           echo "${{ needs.resolve.outputs.cli-digest }}  $ONION" | sha256sum -c
           chmod +x "$ONION"
-          out=$VERIFIED/out snap=$VERIFIED/source.json cmp=$VERIFIED/rebuild.json
+          out=$VERIFIED/out snap=$VERIFIED/source.json cmp=$VERIFIED/rebuild.json egr=$VERIFIED/egress.json
           "$ONION" record job --name seal --runner "$ImageOS $ImageVersion" \
             --tool syft="$("$SYFT" version -o json | jq -r .version)" \
             --out "$ONION_REC/job-seal.json"
@@ -240,7 +241,7 @@ jobs:
           [ -f "$out/image.tar" ] && image_args=(--image-archive "$out/image.tar")
           "$ONION" inventory --manifest "$MANIFEST" \
             --snapshot "$snap" --expect-snapshot "$SNAPSHOT" \
-            --records "$ONION_REC" --gate /tmp/onion-gate/gate.json --rebuild "$cmp" \
+            --records "$ONION_REC" --gate /tmp/onion-gate/gate.json --rebuild "$cmp" --egress "$egr" \
             --platform github-actions \
             --repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --commit "$GITHUB_SHA" --tree "$(git rev-parse 'HEAD^{tree}')" \

@@ -44,6 +44,36 @@ type Dependencies struct {
 	Fetch string `yaml:"fetch" json:"fetch"`
 	// Cache is the path inside the builder that Fetch populates and Build reads.
 	Cache string `yaml:"cache" json:"cache"`
+	// Env configures the fetch step only, e.g. pointing a package manager at
+	// an artifact store. Proxy variables are set by build-onion and can't be
+	// overridden here.
+	Env map[string]string `yaml:"env" json:"env,omitempty"`
+	// Egress is the only network the fetch step may reach. When set, fetch
+	// runs on a network with no route out except a filtering proxy, and any
+	// attempt to reach another host fails the build. When empty, fetch has
+	// unrestricted network and verification reports that as degraded.
+	Egress []EgressRule `yaml:"egress" json:"egress,omitempty"`
+}
+
+// EgressRule allows fetch to reach one host (or a subdomain wildcard) on one port.
+type EgressRule struct {
+	// Host is a DNS name, or *.example.com for any subdomain of example.com.
+	Host string `yaml:"host" json:"host"`
+	// Port defaults to 443.
+	Port int `yaml:"port" json:"port,omitempty"`
+	// Private permits the host to resolve to a private-network address
+	// (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7), as an internal
+	// artifact store would. Loopback, link-local and metadata addresses are
+	// never reachable.
+	Private bool `yaml:"private" json:"private,omitempty"`
+}
+
+// EffectivePort is the rule's port, defaulting to 443.
+func (r EgressRule) EffectivePort() int {
+	if r.Port == 0 {
+		return 443
+	}
+	return r.Port
 }
 
 // Build runs inside the builder image with no network.
@@ -89,6 +119,9 @@ func Parse(raw []byte) (*Manifest, error) {
 	if m.Build.Env == nil {
 		m.Build.Env = map[string]string{}
 	}
+	if m.Dependencies.Env == nil {
+		m.Dependencies.Env = map[string]string{}
+	}
 	return &m, nil
 }
 
@@ -102,7 +135,14 @@ var (
 	pinnedImageRe = regexp.MustCompile(`^[a-z0-9.\-/:_]+@sha256:[a-f0-9]{64}$`)
 	imageNameRe   = regexp.MustCompile(`^[a-z0-9.\-]+(:[0-9]+)?/[a-z0-9._\-/]+$`)
 	nameRe        = regexp.MustCompile(`^[a-z0-9][a-z0-9._\-]*$`)
+	envNameRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// A DNS name with at least two labels, optionally led by "*." for
+	// subdomains. Digits-only final labels (IP addresses) are excluded.
+	egressHostRe = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
+
+// proxyEnv are set by build-onion when fetch runs behind the egress proxy.
+var proxyEnv = map[string]bool{"HTTP_PROXY": true, "HTTPS_PROXY": true, "NO_PROXY": true, "ALL_PROXY": true}
 
 // Validate checks the manifest on its own, without touching the filesystem.
 func (m *Manifest) Validate() error {
@@ -131,6 +171,9 @@ func (m *Manifest) Validate() error {
 	}
 	if m.Dependencies.Cache != "" && !path.IsAbs(m.Dependencies.Cache) {
 		add("dependencies.cache %q must be an absolute path inside the builder", m.Dependencies.Cache)
+	}
+	if err := m.ValidateEgress(); err != nil {
+		errs = append(errs, err)
 	}
 	if strings.TrimSpace(m.Build.Run) == "" {
 		add("build.run is required")
@@ -166,6 +209,37 @@ func (m *Manifest) Validate() error {
 		if err := checkRelPath(img.Context); err != nil {
 			add("outputs.image.context: %v", err)
 		}
+	}
+	return errors.Join(errs...)
+}
+
+// ValidateEgress checks the fetch environment and egress allow-list.
+func (m *Manifest) ValidateEgress() error {
+	var errs []error
+	add := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
+	for k := range m.Dependencies.Env {
+		if !envNameRe.MatchString(k) {
+			add("dependencies.env: %q is not an environment variable name", k)
+		} else if proxyEnv[strings.ToUpper(k)] {
+			add("dependencies.env: %s is set by build-onion's egress proxy and can't be overridden", k)
+		}
+	}
+	if len(m.Dependencies.Egress) > 0 && m.Dependencies.Fetch == "" {
+		add("dependencies.egress applies to the fetch step; set dependencies.fetch")
+	}
+	seenRule := map[string]bool{}
+	for _, r := range m.Dependencies.Egress {
+		if !egressHostRe.MatchString(r.Host) {
+			add("dependencies.egress: host %q must be a lowercase DNS name or *.domain (no IP addresses, schemes or ports)", r.Host)
+		}
+		if r.Port < 0 || r.Port > 65535 {
+			add("dependencies.egress: %s port %d out of range", r.Host, r.Port)
+		}
+		key := fmt.Sprintf("%s:%d", r.Host, r.EffectivePort())
+		if seenRule[key] {
+			add("dependencies.egress: %s listed twice", key)
+		}
+		seenRule[key] = true
 	}
 	return errors.Join(errs...)
 }
