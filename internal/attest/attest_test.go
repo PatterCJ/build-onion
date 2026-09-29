@@ -97,3 +97,16 @@ func TestFromDir(t *testing.T) {
 		t.Fatalf("got %d candidates, want 1", len(cands))
 	}
 }
+
+func TestAbout(t *testing.T) {
+	c := load(t)
+	if about, known := c.About(fixtureDigest); !about || !known {
+		t.Errorf("fixture digest: about=%v known=%v", about, known)
+	}
+	if about, known := c.About("sha256:" + strings.Repeat("0", 64)); about || !known {
+		t.Errorf("other digest: about=%v known=%v", about, known)
+	}
+	if _, known := (Candidate{}).About(fixtureDigest); known {
+		t.Error("empty candidate reported as known")
+	}
+}

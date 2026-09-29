@@ -136,6 +136,33 @@ type Candidate struct {
 	Source string
 }
 
+// About reports, without verifying anything, whether the bundle's statement
+// names artifactDigest as a subject. It only routes bundles that are plainly
+// for other artifacts away from verification (a bundles directory usually
+// holds several artifacts' bundles); a bundle that does name the artifact
+// must still pass Verify. known is false when the statement can't be read,
+// in which case the caller should verify.
+func (c Candidate) About(artifactDigest string) (about, known bool) {
+	if c.Bundle == nil {
+		return false, false
+	}
+	env, err := c.Bundle.Envelope()
+	if err != nil {
+		return false, false
+	}
+	st, err := env.Statement()
+	if err != nil {
+		return false, false
+	}
+	alg, h, _ := strings.Cut(artifactDigest, ":")
+	for _, s := range st.GetSubject() {
+		if s.GetDigest()[alg] == h {
+			return true, true
+		}
+	}
+	return false, true
+}
+
 // FromDir loads every *.json and *.jsonl bundle under dir. Unparseable files
 // are reported, not skipped silently.
 func FromDir(dir string) ([]Candidate, error) {

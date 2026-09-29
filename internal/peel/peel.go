@@ -105,7 +105,12 @@ func Run(in Input) *Report {
 	// Layer 1: seal — signatures, identities, and one run behind all of them.
 	verified := map[string]*attest.Verified{}
 	var rejected []string
+	unrelated := 0
 	for _, c := range in.Candidates {
+		if about, known := c.About(in.Digest); known && !about {
+			unrelated++
+			continue
+		}
 		v, err := in.Verifier.Verify(c, in.Digest)
 		if err != nil {
 			rejected = append(rejected, fmt.Sprintf("%s: %v", c.Source, err))
@@ -118,7 +123,8 @@ func Run(in Input) *Report {
 		}
 	}
 	r.add("seal", "bundles verified", len(verified) > 0,
-		"%d of %d bundles verified against signer %s%s", len(verified), len(in.Candidates), in.Signer.SignerWorkflow, rejectedNote(rejected))
+		"%d of %d bundles for this artifact verified against signer %s%s%s",
+		len(verified), len(in.Candidates)-unrelated, in.Signer.SignerWorkflow, unrelatedNote(unrelated), rejectedNote(rejected))
 	for _, pt := range []string{SLSAProvenanceV1, CycloneDX, inventory.PredicateType} {
 		_, ok := verified[pt]
 		r.add("seal", "has "+shortType(pt), ok, "%s", pt)
@@ -336,7 +342,7 @@ func checkDependencies(r *Report, bom json.RawMessage, inv *inventory.Inventory)
 	r.add("dependencies", "SBOM within lockfile", len(undeclared) == 0,
 		"%d Go modules found in artifact, %d not in lockfile%s", goCount, len(undeclared), listNote(undeclared))
 	if other > 0 {
-		r.skip("dependencies", "non-Go components", fmt.Sprintf("%d components from the pinned base image; not lock-checked", other))
+		r.skip("dependencies", "non-Go components", fmt.Sprintf("%d component(s) not lock-checked (e.g. OS packages from a pinned base image)", other))
 	}
 }
 
@@ -447,6 +453,13 @@ func errNote(err error) string {
 		return ""
 	}
 	return " (" + err.Error() + ")"
+}
+
+func unrelatedNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d bundle(s) for other artifacts ignored)", n)
 }
 
 func rejectedNote(rej []string) string {
