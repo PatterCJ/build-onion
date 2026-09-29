@@ -125,6 +125,7 @@ jobs:
           chmod +x "$ONION"
           peel() { "$ONION" peel "$@" --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" \
             --signer "$SIGNER" --bundles "$BUNDLES" --source . | tee -a "$GITHUB_STEP_SUMMARY"; }
+          shopt -s nullglob  # an image-only manifest has no files
           for f in "$VERIFIED"/out/files/*; do peel "$f"; done
           if [ -f "$VERIFIED/out/image.tar" ]; then
             test "$("$ONION" digest --oci "$VERIFIED/out/image.tar")" = "$IMAGE_DIGEST"
@@ -153,4 +154,5 @@ jobs:
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --notes "Sealed by build-onion. Verify with: onion peel <file> --repo $GITHUB_REPOSITORY --commit $GITHUB_SHA"
           (cd "$BUNDLES" && tar -czf "$RUNNER_TEMP/bundles.tar.gz" .)
+          shopt -s nullglob
           gh release upload "$GITHUB_REF_NAME" "$VERIFIED"/out/files/* "$RUNNER_TEMP/bundles.tar.gz" --clobber

@@ -221,7 +221,9 @@ jobs:
           (cd "$out" && find . -type f | LC_ALL=C sort | xargs sha256sum) > /tmp/onion-sbom/scanned.sha256
           # Built outputs are scanned like an image: what is installed or linked
           # inside them, not what a manifest lying next to them declares.
-          "$SYFT" scan "dir:$out/files" --override-default-catalogers image -o "cyclonedx-json=/tmp/onion-sbom/files.cdx.json"
+          if compgen -G "$out/files/*" > /dev/null; then
+            "$SYFT" scan "dir:$out/files" --override-default-catalogers image -o "cyclonedx-json=/tmp/onion-sbom/files.cdx.json"
+          fi
           if [ -f "$out/image.tar" ]; then
             "$SYFT" scan "oci-archive:$out/image.tar" -o "cyclonedx-json=/tmp/onion-sbom/image.cdx.json"
           fi
@@ -301,7 +303,12 @@ jobs:
             --files "$out/files" "${image_args[@]}" \
             --invocation "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
             > "$RUNNER_TEMP/inventory.json"
-          (cd "$out/files" && sha256sum -- *) > "$RUNNER_TEMP/files.sha256"
+          # A manifest may declare only an image; then there are no file subjects.
+          : > "$RUNNER_TEMP/files.sha256"
+          if compgen -G "$out/files/*" > /dev/null; then
+            (cd "$out/files" && sha256sum -- *) > "$RUNNER_TEMP/files.sha256"
+            echo "has_files=true" >> "$GITHUB_OUTPUT"
+          fi
           { echo 'checksums<<EOF'; cat "$RUNNER_TEMP/files.sha256"; echo EOF; } >> "$GITHUB_OUTPUT"
           if [ -f "$out/image.tar" ]; then
             echo "image_digest=$("$ONION" digest --oci "$out/image.tar")" >> "$GITHUB_OUTPUT"
@@ -311,17 +318,20 @@ jobs:
       # --- file outputs ---
       - name: Seal files — SLSA provenance
         id: files-prov
+        if: steps.subjects.outputs.has_files == 'true'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: ${{ runner.temp }}/files.sha256
       - name: Seal files — SBOM
         id: files-sbom
+        if: steps.subjects.outputs.has_files == 'true'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: ${{ runner.temp }}/files.sha256
           sbom-path: /tmp/onion-sbom/files.cdx.json
       - name: Seal files — inventory
         id: files-inv
+        if: steps.subjects.outputs.has_files == 'true'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: ${{ runner.temp }}/files.sha256
@@ -356,6 +366,7 @@ jobs:
 
       - name: Collect bundles for offline peeling
         env:
+          IMAGE_DIGEST: ${{ steps.subjects.outputs.image_digest }}
           BUNDLES: >-
             ${{ steps.files-prov.outputs.bundle-path }}
             ${{ steps.files-sbom.outputs.bundle-path }}
@@ -368,7 +379,7 @@ jobs:
           i=0
           for b in $BUNDLES; do i=$((i+1)); cp "$b" "$RUNNER_TEMP/bundles/$i.jsonl"; done
           {
-            echo "### 🧅 build-onion security line sealed $(wc -l < "$RUNNER_TEMP/files.sha256") file(s)"
+            echo "### 🧅 build-onion security line sealed $(wc -l < "$RUNNER_TEMP/files.sha256") file(s)$([ -n "$IMAGE_DIGEST" ] && echo " and an image $IMAGE_DIGEST")"
             echo "Independent rebuild matched the build line. Source snapshot: \`$SNAPSHOT\`"
             echo '```'; cat "$RUNNER_TEMP/files.sha256"; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
