@@ -32,6 +32,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/peel"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/upstream"
 	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
@@ -51,6 +52,7 @@ Usage:
   onion build     [--source DIR] [--manifest FILE] --cache DIR --out DIR [--snapshot FILE] [--stage-dir DIR]
   onion record    job|workflow|build-onion|scan --out FILE [flags]
   onion compare   --staged DIR --rebuilt DIR [--out FILE]
+  onion upstream  [--source DIR] [--manifest FILE] [--snapshot FILE] [--out FILE] [-v]
   onion digest    [--oci] PATH...
   onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
   onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
@@ -68,6 +70,7 @@ func main() {
 		"gate":      cmdGate,
 		"record":    cmdRecord,
 		"compare":   cmdCompare,
+		"upstream":  cmdUpstream,
 		"proxy":     cmdProxy,
 		"fetch":     cmdFetch,
 		"build":     cmdBuild,
@@ -327,6 +330,7 @@ func cmdInventory(args []string) error {
 	platform := fs.String("platform", "local", "CI platform name")
 	gatePath := fs.String("gate", "", "gate verdict JSON from `onion gate`")
 	rebuildPath := fs.String("rebuild", "", "comparison JSON from `onion compare`")
+	upstreamPath := fs.String("upstream", "", "registry check JSON from `onion upstream`")
 	egressPath := fs.String("egress", "", "fetch network record from `onion fetch --egress-out`")
 	fs.Parse(args)
 	if p.Repository == "" || p.Commit == "" || p.Tree == "" || p.FilesDir == "" || *snapPath == "" || *records == "" {
@@ -361,6 +365,12 @@ func cmdInventory(args []string) error {
 	if *rebuildPath != "" {
 		p.Verification = &inventory.Verification{Rebuild: new(verify.Rebuild)}
 		if err := readJSON(*rebuildPath, p.Verification.Rebuild); err != nil {
+			return err
+		}
+	}
+	if *upstreamPath != "" {
+		p.Upstream = new(upstream.Record)
+		if err := readJSON(*upstreamPath, p.Upstream); err != nil {
 			return err
 		}
 	}
@@ -525,10 +535,18 @@ func resolveDigest(artifact string) (string, error) {
 func printPackages(w io.Writer, r *peel.Report) {
 	fmt.Fprintf(w, "\npackages in %s (%d)\n", r.Artifact, len(r.Packages))
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ECOSYSTEM\tPACKAGE\tVERSION\tOUTCOME\tDETAIL")
-	fmt.Fprintln(tw, "---------\t-------\t-------\t-------\t------")
+	up := map[string]string{}
+	for _, u := range r.Upstream {
+		up[upstream.Key(u.Ecosystem, u.Name, u.Version)] = u.Outcome
+	}
+	fmt.Fprintln(tw, "ECOSYSTEM\tPACKAGE\tVERSION\tOUTCOME\tUPSTREAM\tDETAIL")
+	fmt.Fprintln(tw, "---------\t-------\t-------\t-------\t--------\t------")
 	for _, p := range r.Packages {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.Ecosystem, p.Name, p.Version, p.Outcome, p.Detail)
+		u := up[upstream.Key(p.Ecosystem, p.Name, p.Version)]
+		if u == "" {
+			u = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", p.Ecosystem, p.Name, p.Version, p.Outcome, u, p.Detail)
 	}
 	tw.Flush()
 }

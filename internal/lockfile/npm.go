@@ -15,15 +15,17 @@ func init() {
 // npmEntry is a v2/v3 "packages" entry. Its "dependencies" are version
 // ranges, not pinned packages, and are not read.
 type npmEntry struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Dev     bool   `json:"dev"`
-	Link    bool   `json:"link"`
+	Name      string `json:"name"`
+	Version   string `json:"version"`
+	Integrity string `json:"integrity"`
+	Dev       bool   `json:"dev"`
+	Link      bool   `json:"link"`
 }
 
 // npmV1Entry is a lockfileVersion 1 "dependencies" entry, which nests.
 type npmV1Entry struct {
 	Version      string                `json:"version"`
+	Integrity    string                `json:"integrity"`
 	Dev          bool                  `json:"dev"`
 	Dependencies map[string]npmV1Entry `json:"dependencies"`
 }
@@ -63,7 +65,11 @@ func parseNpmLock(data []byte, _ Sibling) (Result, error) {
 			if e.Version == "" {
 				return Result{}, fmt.Errorf("%s: no version", key)
 			}
-			res.Packages = append(res.Packages, Package{Name: name, Version: e.Version, Dev: e.Dev})
+			archives, err := SRIDigests(e.Integrity)
+			if err != nil {
+				return Result{}, fmt.Errorf("%s: %w", key, err)
+			}
+			res.Packages = append(res.Packages, Package{Name: name, Version: e.Version, Archives: archives, Dev: e.Dev})
 		}
 		return res, nil
 	}
@@ -71,14 +77,23 @@ func parseNpmLock(data []byte, _ Sibling) (Result, error) {
 		if lock.Name != "" {
 			res.Local = append(res.Local, Local{Name: lock.Name})
 		}
-		var walk func(map[string]npmV1Entry)
-		walk = func(deps map[string]npmV1Entry) {
+		var walk func(map[string]npmV1Entry) error
+		walk = func(deps map[string]npmV1Entry) error {
 			for name, e := range deps {
-				res.Packages = append(res.Packages, Package{Name: name, Version: e.Version, Dev: e.Dev})
-				walk(e.Dependencies)
+				archives, err := SRIDigests(e.Integrity)
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
+				res.Packages = append(res.Packages, Package{Name: name, Version: e.Version, Archives: archives, Dev: e.Dev})
+				if err := walk(e.Dependencies); err != nil {
+					return err
+				}
 			}
+			return nil
 		}
-		walk(lock.Dependencies)
+		if err := walk(lock.Dependencies); err != nil {
+			return Result{}, err
+		}
 		return res, nil
 	}
 	return Result{}, fmt.Errorf("no packages: unrecognized lockfile layout (lockfileVersion %d)", lock.LockfileVersion)

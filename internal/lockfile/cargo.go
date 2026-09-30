@@ -16,9 +16,10 @@ func init() {
 func parseCargoLock(data []byte, _ Sibling) (Result, error) {
 	var lock struct {
 		Package []struct {
-			Name    string `toml:"name"`
-			Version string `toml:"version"`
-			Source  string `toml:"source"`
+			Name     string `toml:"name"`
+			Version  string `toml:"version"`
+			Source   string `toml:"source"`
+			Checksum string `toml:"checksum"`
 		} `toml:"package"`
 	}
 	if _, err := toml.NewDecoder(bytes.NewReader(data)).Decode(&lock); err != nil {
@@ -33,7 +34,15 @@ func parseCargoLock(data []byte, _ Sibling) (Result, error) {
 		if p.Version == "" {
 			return Result{}, fmt.Errorf("package %s has no version", p.Name)
 		}
-		res.Packages = append(res.Packages, Package{Name: p.Name, Version: p.Version})
+		pkg := Package{Name: p.Name, Version: p.Version}
+		if p.Checksum != "" {
+			d, err := archiveDigest(p.Checksum, "sha256")
+			if err != nil {
+				return Result{}, fmt.Errorf("package %s: %w", p.Name, err)
+			}
+			pkg.Archives = []string{d}
+		}
+		res.Packages = append(res.Packages, pkg)
 	}
 	return res, nil
 }

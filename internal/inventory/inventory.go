@@ -17,6 +17,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/upstream"
 	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
@@ -44,6 +45,9 @@ type Inventory struct {
 	// Egress is the network the fetch step had, and every connection it made
 	// when it ran behind the egress proxy.
 	Egress *egress.Record `json:"egress,omitempty"`
+	// Upstream is every locked dependency checked against its public
+	// registry: published bytes, and signed provenance where there is some.
+	Upstream *upstream.Record `json:"upstream,omitempty"`
 }
 
 type Verification struct {
@@ -135,6 +139,8 @@ type Params struct {
 	// Egress is the fetch network record from the fetch whose cache produced
 	// these outputs. Required when the manifest declares an allow-list.
 	Egress *egress.Record
+	// Upstream is the security line's registry check of the lockfiles.
+	Upstream *upstream.Record
 	// ResolveBase returns a pinned image's layer diffIDs (linux/amd64).
 	ResolveBase func(ref string) ([]string, error)
 }
@@ -188,28 +194,16 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		},
 		Run: Run{InvocationURL: p.InvocationURL},
 	}
-	for _, l := range m.Dependencies.Lockfiles {
-		d, err := digest.File(filepath.Join(p.SourceDir, l))
-		if err != nil {
-			return nil, nil, fmt.Errorf("lockfile: %w", err)
+	locks, err := ReadLockfiles(p.SourceDir, m)
+	if err != nil {
+		return nil, nil, err
+	}
+	inv.Lockfiles, inv.Dependencies, inv.Local = locks.Files, locks.Packages, locks.Local
+	if p.Upstream != nil {
+		if err := CheckUpstream(inv.Lockfiles, inv.Dependencies, p.Upstream); err != nil {
+			return nil, nil, fmt.Errorf("upstream record: %w", err)
 		}
-		ref := FileRef{Path: l, Digest: d}
-		full := filepath.Join(p.SourceDir, l)
-		data, err := os.ReadFile(full)
-		if err != nil {
-			return nil, nil, err
-		}
-		sibling := func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(filepath.Dir(full), name)) }
-		res, ok, err := lockfile.Parse(l, data, sibling)
-		if err != nil {
-			return nil, nil, err
-		}
-		if ok {
-			ref.Ecosystem = lockfile.Ecosystem(l)
-			inv.Dependencies = append(inv.Dependencies, res.Packages...)
-			inv.Local = append(inv.Local, res.Local...)
-		}
-		inv.Lockfiles = append(inv.Lockfiles, ref)
+		inv.Upstream = p.Upstream
 	}
 	for _, f := range m.Outputs.Files {
 		name := filepath.Base(f)
@@ -277,6 +271,85 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		return nil, nil, err
 	}
 	return inv, m, nil
+}
+
+// Locks is what a manifest's lockfiles declare.
+type Locks struct {
+	Files    []FileRef
+	Packages []lockfile.Package
+	Local    []lockfile.Local
+}
+
+// ReadLockfiles hashes and parses every lockfile the manifest declares.
+func ReadLockfiles(sourceDir string, m *manifest.Manifest) (Locks, error) {
+	var out Locks
+	for _, l := range m.Dependencies.Lockfiles {
+		full := filepath.Join(sourceDir, l)
+		data, err := os.ReadFile(full)
+		if err != nil {
+			return Locks{}, fmt.Errorf("lockfile: %w", err)
+		}
+		ref := FileRef{Path: l, Digest: digest.Bytes(data)}
+		sibling := func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(filepath.Dir(full), name)) }
+		res, ok, err := lockfile.Parse(l, data, sibling)
+		if err != nil {
+			return Locks{}, err
+		}
+		if ok {
+			ref.Ecosystem = lockfile.Ecosystem(l)
+			out.Packages = append(out.Packages, res.Packages...)
+			out.Local = append(out.Local, res.Local...)
+		}
+		out.Files = append(out.Files, ref)
+	}
+	return out, nil
+}
+
+// CheckUpstream requires an upstream record to be of exactly these lockfiles
+// and to cover every package they lock, with each attestation about an
+// archive the lockfile pins.
+func CheckUpstream(lockfiles []FileRef, pkgs []lockfile.Package, rec *upstream.Record) error {
+	var want []upstream.Lockfile
+	for _, l := range lockfiles {
+		if l.Ecosystem != "" {
+			want = append(want, upstream.Lockfile{Path: l.Path, Digest: l.Digest})
+		}
+	}
+	if len(want) != len(rec.Lockfiles) {
+		return fmt.Errorf("checked %d lockfile(s), the build locks with %d", len(rec.Lockfiles), len(want))
+	}
+	for i := range want {
+		if want[i] != rec.Lockfiles[i] {
+			return fmt.Errorf("checked %s %s, the build locks with %s %s", rec.Lockfiles[i].Path, rec.Lockfiles[i].Digest, want[i].Path, want[i].Digest)
+		}
+	}
+	archives := map[string]map[string]bool{}
+	for _, p := range pkgs {
+		k := upstream.Key(p.Ecosystem, p.Name, p.Version)
+		if archives[k] == nil {
+			archives[k] = map[string]bool{}
+		}
+		for _, a := range p.Archives {
+			archives[k][a] = true
+		}
+	}
+	checked := map[string]bool{}
+	var errs []error
+	for _, r := range rec.Results {
+		k := upstream.Key(r.Ecosystem, r.Name, r.Version)
+		checked[k] = true
+		for _, a := range r.Attestations {
+			if !archives[k][a.Subject] {
+				errs = append(errs, fmt.Errorf("%s: attestation is about %s, which the lockfile doesn't pin", k, a.Subject))
+			}
+		}
+	}
+	for k := range archives {
+		if !checked[k] {
+			errs = append(errs, fmt.Errorf("%s is locked but wasn't checked", k))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // checkScans requires every recorded scan to be about this build's bytes:

@@ -12,6 +12,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/upstream"
 )
 
 const manifestYAML = `apiVersion: build-onion/v1
@@ -371,5 +372,40 @@ func TestGenerateImageLayers(t *testing.T) {
 	// An image that doesn't start with its base's layers wasn't built FROM it.
 	if _, _, err := Generate(params(archive(appLayer))); err == nil || !strings.Contains(err.Error(), "does not start with the layers") {
 		t.Fatalf("wrong base accepted: %v", err)
+	}
+}
+
+func TestGenerateUpstream(t *testing.T) {
+	src, snap := gitSource(t)
+	files := t.TempDir()
+	os.WriteFile(filepath.Join(files, "widget"), []byte("binary"), 0o755)
+	lock := []upstream.Lockfile{{Path: "go.sum", Digest: digest.Bytes([]byte(goSum))}}
+	results := []upstream.Result{
+		{Ecosystem: "golang", Name: "github.com/a/b", Version: "v1.2.0", Outcome: upstream.Logged},
+		{Ecosystem: "golang", Name: "gopkg.in/yaml.v3", Version: "v3.0.1", Outcome: upstream.Logged},
+	}
+	gen := func(rec *upstream.Record) error {
+		p := params(src, snap, files)
+		p.Upstream = rec
+		inv, _, err := Generate(p)
+		if err == nil && inv.Upstream != rec {
+			t.Error("upstream record not kept")
+		}
+		return err
+	}
+	if err := gen(&upstream.Record{Lockfiles: lock, Results: results}); err != nil {
+		t.Fatal(err)
+	}
+	stale := []upstream.Lockfile{{Path: "go.sum", Digest: digest.Bytes([]byte("older go.sum"))}}
+	if err := gen(&upstream.Record{Lockfiles: stale, Results: results}); err == nil || !strings.Contains(err.Error(), "the build locks with") {
+		t.Errorf("record of another go.sum accepted: %v", err)
+	}
+	if err := gen(&upstream.Record{Lockfiles: lock, Results: results[:1]}); err == nil || !strings.Contains(err.Error(), "wasn't checked") {
+		t.Errorf("record missing a package accepted: %v", err)
+	}
+	stray := append([]upstream.Result{}, results...)
+	stray[0].Attestations = []upstream.Attestation{{Subject: "sha256:" + strings.Repeat("0", 64)}}
+	if err := gen(&upstream.Record{Lockfiles: lock, Results: stray}); err == nil || !strings.Contains(err.Error(), "doesn't pin") {
+		t.Errorf("attestation about unlocked bytes accepted: %v", err)
 	}
 }

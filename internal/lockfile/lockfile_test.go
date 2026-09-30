@@ -103,8 +103,8 @@ func TestRequirements(t *testing.T) {
 	res := parse(t, "requirements.txt", `# a comment
 --index-url https://pypi.org/simple
 certifi==2026.7.22 \
-    --hash=sha256:aaa \
-    --hash=sha256:bbb
+    --hash=sha256:aa11 \
+    --hash=sha256:BB22
 requests[socks]==2.32.3 ; python_version >= "3.8"
 PyYAML===6.0.2  # exact
 `)
@@ -176,7 +176,7 @@ version = "0.1.0"
 name = "serde"
 version = "1.0.210"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abc"
+checksum = "ab12"
 `)
 	if len(res.Local) != 1 || res.Local[0].Name != "my-app" || len(res.Packages) != 1 {
 		t.Errorf("local %+v packages %+v", res.Local, res.Packages)
@@ -199,5 +199,55 @@ func TestNormalize(t *testing.T) {
 	}
 	if Normalize("golang", "github.com/Foo/bar") == Normalize("golang", "github.com/foo/bar") {
 		t.Error("Go module paths are case-sensitive")
+	}
+}
+
+func TestArchives(t *testing.T) {
+	read := func(p string) Result {
+		t.Helper()
+		data, err := os.ReadFile("../deps/testdata/" + p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, _, err := Parse(p, data, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	for _, c := range []struct{ file, pkg, prefix string }{
+		{"npm/package-lock.json", "http-server", "sha512:"},
+		{"pypi/requirements.txt", "pyyaml", "sha256:"},
+		{"pypi/uv.lock", "pyyaml", "sha256:"},
+		{"pypi/poetry.lock", "pyyaml", "sha256:"},
+		{"cargo/Cargo.lock", "serde_json", "sha256:"},
+	} {
+		var pkg Package
+		for _, p := range read(c.file).Packages {
+			if Normalize(p.Ecosystem, p.Name) == Normalize(p.Ecosystem, c.pkg) {
+				pkg = p
+			}
+		}
+		if len(pkg.Archives) == 0 {
+			t.Errorf("%s: %s has no archive hashes", c.file, c.pkg)
+			continue
+		}
+		for _, a := range pkg.Archives {
+			if !strings.HasPrefix(a, c.prefix) {
+				t.Errorf("%s: %s archive %q, want %s…", c.file, c.pkg, a, c.prefix)
+			}
+		}
+	}
+	req := parse(t, "requirements.txt", "certifi==1.0 --hash=sha256:AA11 --hash=sha256:bb22\n")
+	if got := strings.Join(req.Packages[0].Archives, " "); got != "sha256:aa11 sha256:bb22" {
+		t.Errorf("requirement hashes = %q", got)
+	}
+	npm := parse(t, "package-lock.json", `{"lockfileVersion":3,"packages":{"node_modules/a":{"version":"1.0.0",
+		"integrity":"sha1-qvuhGE4j9RfuB1BU4t0PFhQXL0s= sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg=="}}}`)
+	if a := npm.Packages[0].Archives; len(a) != 2 || !strings.HasPrefix(a[0], "sha512:cf83e135") {
+		t.Errorf("integrity = %v, want sha512 first", a)
+	}
+	if _, _, err := Parse("Cargo.lock", []byte("[[package]]\nname=\"x\"\nversion=\"1\"\nsource=\"registry+x\"\nchecksum=\"zz\"\n"), nil); err == nil {
+		t.Error("non-hex checksum accepted")
 	}
 }

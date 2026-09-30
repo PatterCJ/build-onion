@@ -1,8 +1,8 @@
 // Package peel runs the reverse check. Starting from an artifact digest it
 // removes one layer at a time — seal, provenance, inventory, gate,
-// verification, pipeline, scans, dependencies, source, rebuild — and checks
-// that each layer agrees with the one beneath it and with what the caller
-// claims the artifact is.
+// verification, pipeline, scans, dependencies, upstream, source, rebuild —
+// and checks that each layer agrees with the one beneath it and with what
+// the caller claims the artifact is.
 //
 // Every check is graded, and the report's verdict is the worst grade present.
 // Incomplete evidence is never reported as clean: a check that could not be
@@ -28,6 +28,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/upstream"
 	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
@@ -78,6 +79,8 @@ type Report struct {
 	NotPerformed []string `json:"notPerformed,omitempty"`
 	// Packages is every package found in the artifact and its outcome.
 	Packages []deps.Result `json:"packages,omitempty"`
+	// Upstream is every locked package's registry check, as sealed.
+	Upstream []upstream.Result `json:"upstream,omitempty"`
 }
 
 // ExitCode is 0 for Passed, 3 for Degraded or Unsupported, 4 for Finding and
@@ -261,6 +264,10 @@ func Run(in Input) *Report {
 	// dependencies: everything the SBOM finds in the artifact must be accounted for.
 	if v := verified[CycloneDX]; v != nil && haveInv {
 		checkDependencies(r, v.Statement.Predicate, &inv, in.Digest)
+	}
+	// upstream: every locked package against its public registry.
+	if haveInv {
+		checkUpstream(r, &inv)
 	}
 
 	// source: recompute the inventory's source facts from a checkout.
@@ -579,6 +586,84 @@ func checkDependencies(r *Report, bom json.RawMessage, inv *inventory.Inventory,
 		r.grade("dependencies", eco+" declared, not shipped", Note, "%d declared package(s) (plus %d dev) aren't in this artifact",
 			rep.NotShipped[eco], rep.NotShippedDev[eco])
 	}
+}
+
+// checkUpstream grades the security line's registry check. Bytes the
+// registry doesn't publish, or provenance that fails verification, are
+// findings; a package with no provenance is not, since most publish none.
+func checkUpstream(r *Report, inv *inventory.Inventory) {
+	rec := inv.Upstream
+	if rec == nil {
+		if len(inv.Dependencies) > 0 {
+			r.grade("upstream", "registry check", Note, "not recorded (sealed before build-onion checked registries)")
+		}
+		return
+	}
+	if err := inventory.CheckUpstream(inv.Lockfiles, inv.Dependencies, rec); err != nil {
+		r.grade("upstream", "record covers the lockfiles", Failed, "%v", firstLine(err.Error()))
+		return
+	}
+	r.Upstream = rec.Results
+	if len(rec.Results) == 0 {
+		r.grade("upstream", "packages", Passed, "no locked packages")
+		return
+	}
+	per := map[string]map[string]int{}
+	var findings, errs, unchecked []string
+	repos := map[string]bool{}
+	for _, res := range rec.Results {
+		if per[res.Ecosystem] == nil {
+			per[res.Ecosystem] = map[string]int{}
+		}
+		per[res.Ecosystem][res.Outcome]++
+		id := fmt.Sprintf("%s %s@%s", res.Ecosystem, res.Name, res.Version)
+		switch res.Outcome {
+		case upstream.Mismatch, upstream.Invalid:
+			findings = append(findings, fmt.Sprintf("%s: %s (%s)", res.Outcome, id, res.Detail))
+		case upstream.Error:
+			errs = append(errs, fmt.Sprintf("%s (%s)", id, res.Detail))
+		case upstream.NotFound, upstream.Unhashed:
+			unchecked = append(unchecked, fmt.Sprintf("%s (%s)", id, res.Outcome))
+		}
+		for _, a := range res.Attestations {
+			repos[a.Repository] = true
+		}
+	}
+	for _, eco := range sortedKeys(per) {
+		var parts []string
+		n := 0
+		for _, o := range []string{upstream.Attested, upstream.Logged, upstream.Published, upstream.Unhashed, upstream.NotFound, upstream.Mismatch, upstream.Invalid, upstream.Error} {
+			if c := per[eco][o]; c > 0 {
+				n += c
+				parts = append(parts, fmt.Sprintf("%d %s", c, o))
+			}
+		}
+		st := Passed
+		if per[eco][upstream.Attested]+per[eco][upstream.Logged]+per[eco][upstream.Published] == 0 {
+			st = Note
+		}
+		r.grade("upstream", eco, st, "%d locked: %s", n, strings.Join(parts, ", "))
+	}
+	r.check("upstream", "locked bytes are the published bytes", len(findings) == 0, Finding, "%d problem(s)%s", len(findings), listNote(findings))
+	if len(errs) > 0 {
+		r.grade("upstream", "registries reachable", Degraded, "%d package(s) couldn't be checked%s", len(errs), listNote(errs))
+	}
+	if len(unchecked) > 0 {
+		r.grade("upstream", "not comparable", Note, "%d package(s) not on a public registry or without a locked hash%s", len(unchecked), listNote(unchecked))
+	}
+	if len(repos) > 0 {
+		r.grade("upstream", "provenance", Note, "%d attested package(s) built by %d source repositories; checked %s", countAttested(rec), len(repos), rec.CheckedAt)
+	}
+}
+
+func countAttested(rec *upstream.Record) int {
+	n := 0
+	for _, res := range rec.Results {
+		if res.Outcome == upstream.Attested {
+			n++
+		}
+	}
+	return n
 }
 
 // declaredFrom reads the declared side, including the shapes older

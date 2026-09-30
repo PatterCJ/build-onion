@@ -69,12 +69,29 @@ func (id Identity) sanRegex() string {
 // Verifier checks bundles against a Sigstore trust root.
 type Verifier struct {
 	sev *verify.Verifier
-	id  verify.CertificateIdentity
+	id  *verify.CertificateIdentity // nil: any identity, recorded by the caller
 }
 
 // NewVerifier uses trustedRootPath if set, otherwise fetches the Sigstore
 // public-good root over TUF (what GitHub uses for public repositories).
 func NewVerifier(trustedRootPath string, id Identity) (*Verifier, error) {
+	v, err := NewAnyIdentityVerifier(trustedRootPath)
+	if err != nil {
+		return nil, err
+	}
+	certID, err := verify.NewShortCertificateIdentity(GitHubIssuer, "", "", id.sanRegex())
+	if err != nil {
+		return nil, err
+	}
+	v.id = &certID
+	return v, nil
+}
+
+// NewAnyIdentityVerifier checks signature, certificate chain and
+// transparency log, but accepts any signer. It is for third-party bundles
+// (a dependency's provenance) where the caller records who signed rather
+// than requiring someone in particular.
+func NewAnyIdentityVerifier(trustedRootPath string) (*Verifier, error) {
 	var tm root.TrustedMaterial
 	var err error
 	if trustedRootPath != "" {
@@ -93,11 +110,7 @@ func NewVerifier(trustedRootPath string, id Identity) (*Verifier, error) {
 	if err != nil {
 		return nil, err
 	}
-	certID, err := verify.NewShortCertificateIdentity(GitHubIssuer, "", "", id.sanRegex())
-	if err != nil {
-		return nil, err
-	}
-	return &Verifier{sev: sev, id: certID}, nil
+	return &Verifier{sev: sev}, nil
 }
 
 // Verify checks one candidate bundle for the given artifact digest.
@@ -106,10 +119,11 @@ func (v *Verifier) Verify(c Candidate, artifactDigest string) (*Verified, error)
 	if err != nil {
 		return nil, err
 	}
-	res, err := v.sev.Verify(c.Bundle, verify.NewPolicy(
-		verify.WithArtifactDigest(alg, raw),
-		verify.WithCertificateIdentity(v.id),
-	))
+	idOpt := verify.WithoutIdentitiesUnsafe()
+	if v.id != nil {
+		idOpt = verify.WithCertificateIdentity(*v.id)
+	}
+	res, err := v.sev.Verify(c.Bundle, verify.NewPolicy(verify.WithArtifactDigest(alg, raw), idOpt))
 	if err != nil {
 		return nil, err
 	}

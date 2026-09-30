@@ -19,6 +19,9 @@ func init() {
 }
 
 // requirementRe matches a fully pinned requirement: name[extras]==version.
+// requirementHashRe matches a --hash=alg:hex option.
+var requirementHashRe = regexp.MustCompile(`--hash[= ]([A-Za-z0-9]+:[0-9A-Fa-f]+)`)
+
 var requirementRe = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9._-]*)(\[[^\]]*\])?\s*===?\s*([^\s;\\]+)`)
 
 // parseRequirements reads a hash-pinned requirements file, as produced by
@@ -50,7 +53,15 @@ func parseRequirements(data []byte, _ Sibling) (Result, error) {
 		if m == nil {
 			return Result{}, fmt.Errorf("line %d: %q is not pinned with ==", n, firstField(line))
 		}
-		res.Packages = append(res.Packages, Package{Name: m[1], Version: m[3]})
+		pkg := Package{Name: m[1], Version: m[3]}
+		for _, h := range requirementHashRe.FindAllStringSubmatch(line, -1) {
+			d, err := archiveDigest(h[1], "")
+			if err != nil {
+				return Result{}, fmt.Errorf("line %d: %w", n, err)
+			}
+			pkg.Archives = append(pkg.Archives, d)
+		}
+		res.Packages = append(res.Packages, pkg)
 	}
 	return res, sc.Err()
 }
@@ -70,6 +81,8 @@ func parseUvLock(data []byte, _ Sibling) (Result, error) {
 			Name    string         `toml:"name"`
 			Version string         `toml:"version"`
 			Source  map[string]any `toml:"source"`
+			Sdist   *lockedFile    `toml:"sdist"`
+			Wheels  []lockedFile   `toml:"wheels"`
 		} `toml:"package"`
 	}
 	if _, err := toml.NewDecoder(bytes.NewReader(data)).Decode(&lock); err != nil {
@@ -77,6 +90,10 @@ func parseUvLock(data []byte, _ Sibling) (Result, error) {
 	}
 	var res Result
 	for _, p := range lock.Package {
+		files := p.Wheels
+		if p.Sdist != nil {
+			files = append(files, *p.Sdist)
+		}
 		if isLocalSource(p.Source, "editable", "virtual", "directory") {
 			res.Local = append(res.Local, Local{Name: p.Name})
 			continue
@@ -84,9 +101,33 @@ func parseUvLock(data []byte, _ Sibling) (Result, error) {
 		if p.Version == "" {
 			return Result{}, fmt.Errorf("package %s has no version", p.Name)
 		}
-		res.Packages = append(res.Packages, Package{Name: p.Name, Version: p.Version})
+		archives, err := fileDigests(files)
+		if err != nil {
+			return Result{}, fmt.Errorf("package %s: %w", p.Name, err)
+		}
+		res.Packages = append(res.Packages, Package{Name: p.Name, Version: p.Version, Archives: archives})
 	}
 	return res, nil
+}
+
+// lockedFile is one distribution file in uv.lock or poetry.lock.
+type lockedFile struct {
+	Hash string `toml:"hash"`
+}
+
+func fileDigests(files []lockedFile) ([]string, error) {
+	var out []string
+	for _, f := range files {
+		if f.Hash == "" {
+			continue
+		}
+		d, err := archiveDigest(f.Hash, "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, nil
 }
 
 // parsePoetryLock reads poetry.lock. Packages only in non-main groups are dev.
@@ -98,6 +139,7 @@ func parsePoetryLock(data []byte, _ Sibling) (Result, error) {
 			Category string         `toml:"category"` // poetry < 1.5
 			Groups   []string       `toml:"groups"`   // poetry >= 1.5
 			Source   map[string]any `toml:"source"`
+			Files    []lockedFile   `toml:"files"`
 		} `toml:"package"`
 	}
 	if _, err := toml.NewDecoder(bytes.NewReader(data)).Decode(&lock); err != nil {
@@ -118,7 +160,11 @@ func parsePoetryLock(data []byte, _ Sibling) (Result, error) {
 				}
 			}
 		}
-		res.Packages = append(res.Packages, Package{Name: p.Name, Version: p.Version, Dev: dev})
+		archives, err := fileDigests(p.Files)
+		if err != nil {
+			return Result{}, fmt.Errorf("package %s: %w", p.Name, err)
+		}
+		res.Packages = append(res.Packages, Package{Name: p.Name, Version: p.Version, Archives: archives, Dev: dev})
 	}
 	return res, nil
 }

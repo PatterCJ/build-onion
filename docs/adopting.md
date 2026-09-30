@@ -106,6 +106,31 @@ Every package in the artifact gets one outcome:
 
 Packages declared but not shipped (tests, tooling, other platforms) are counted as a note.
 
+### How locked packages are checked upstream
+
+The lockfile proves the artifact matches what you locked. The security line's `upstream` job then checks what you locked against the public registries, for every locked package, shipped or not (build-time tools run during fetch and build):
+
+| Ecosystem | Checked against | Strongest outcome |
+|---|---|---|
+| Go | `go.sum` hashes against the sum.golang.org transparency log, with its signed tree head and inclusion proofs verified | logged |
+| npm | `integrity` against the registry's, then the registry's Sigstore provenance, whose subject must be that same sha512 | attested |
+| Python | every locked wheel and sdist hash against PyPI's files for that project and version, then each file's PEP 740 attestations | attested |
+| Rust | `Cargo.lock` checksums against the crates.io index (crates.io publishes no provenance) | published |
+
+| Outcome | Meaning | Grade |
+|---|---|---|
+| attested | Signed provenance verified, about exactly the locked bytes. The source repository, commit and workflow that built it are recorded. | PASSED |
+| logged | The hash is the one Go's checksum log gives everyone. | PASSED |
+| published | The registry publishes exactly the locked bytes, but no provenance for them. | PASSED |
+| not-found / unhashed | Not on the public registry (a private package), or the lockfile pins no hash to compare. | NOTE |
+| mismatch | The lockfile pins bytes the public registry doesn't publish under that name and version. | FINDING |
+| invalid | The registry serves provenance that fails verification, or that is about other bytes. | FINDING |
+| error | A registry couldn't be reached. | DEGRADED |
+
+The check always uses the public registries, even when your fetch goes through a mirror: the mirror should agree with them. A private package whose name and version also exist on the public registry grades mismatch, since that name is open to dependency confusion. Rename or scope the private package.
+
+`onion upstream` runs the same check locally; `--npm-registry`, `--pypi`, `--crates-index`, `--gosumdb` and `--gosumdb-key` point it elsewhere.
+
 ## 2. Make it reproducible
 
 The security line seals only if its independent rebuild matches the build line byte for byte, so the build must be deterministic. Common fixes:
