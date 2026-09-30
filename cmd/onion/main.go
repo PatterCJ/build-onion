@@ -55,7 +55,7 @@ Usage:
   onion upstream  [--source DIR] [--manifest FILE] [--snapshot FILE] [--out FILE] [-v]
   onion digest    [--oci] PATH...
   onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
-  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
+  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--baseline ARTIFACT] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
   onion version
 `
 
@@ -399,6 +399,9 @@ func cmdPeel(args []string) error {
 	packages := fs.Bool("packages", false, "list every package found in the artifact and its outcome")
 	refs := fs.String("ref", "", "comma-separated refs the artifact must have been built from, e.g. 'refs/heads/main,refs/tags/v*'")
 	oci := fs.Bool("oci", false, "ARTIFACT is an OCI image-layout tarball; verify its image digest")
+	baseline := fs.String("baseline", "", "a previously sealed artifact (usually the last release) to compare with")
+	baselineBundles := fs.String("baseline-bundles", "", "directory of the baseline's Sigstore bundles (default: GitHub attestations API)")
+	acceptSignerChanges := fs.Bool("accept-signer-changes", false, "with --baseline: report dependencies that lost provenance or changed signer as notes, not findings")
 	artifact, rest := splitPositional(args)
 	fs.Parse(rest)
 	if artifact == "" && fs.NArg() == 1 {
@@ -421,21 +424,22 @@ func cmdPeel(args []string) error {
 	if err != nil {
 		return err
 	}
-	var cands []attest.Candidate
-	if *bundles != "" {
-		cands, err = attest.FromDir(*bundles)
-	} else {
-		cands, err = attest.FromGitHub(context.Background(), *repo, d, os.Getenv("GITHUB_TOKEN"))
-	}
-	if err != nil {
-		return err
-	}
 	id := attest.Identity{SignerWorkflow: *signer, SignerRef: *signerRef}
 	v, err := attest.NewVerifier(*trustedRoot, id)
 	if err != nil {
 		return err
 	}
-	rep := peel.Run(peel.Input{
+	candidates := func(dir, d string) ([]attest.Candidate, error) {
+		if dir != "" {
+			return attest.FromDir(dir)
+		}
+		return attest.FromGitHub(context.Background(), *repo, d, os.Getenv("GITHUB_TOKEN"))
+	}
+	cands, err := candidates(*bundles, d)
+	if err != nil {
+		return err
+	}
+	in := peel.Input{
 		Artifact:   artifact,
 		Digest:     d,
 		Claim:      peel.Claim{Repository: *repo, Commit: *commit},
@@ -445,7 +449,27 @@ func cmdPeel(args []string) error {
 		SourceDir:  *source,
 		Rebuild:    *rebuild,
 		Refs:       splitList(*refs),
-	})
+	}
+	rep := peel.Run(in)
+	if *baseline != "" {
+		// The baseline is verified the same way, minus the claims about
+		// this artifact's commit and checkout.
+		base := &peel.Report{Artifact: *baseline, Verdict: peel.Failed}
+		bd, err := resolveDigest(*baseline)
+		if err == nil {
+			var bc []attest.Candidate
+			if bc, err = candidates(*baselineBundles, bd); err == nil {
+				bin := in
+				bin.Artifact, bin.Digest, bin.Candidates = *baseline, bd, bc
+				bin.Claim.Commit, bin.SourceDir, bin.Rebuild = "", "", false
+				base = peel.Run(bin)
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "onion: baseline %s: %v\n", *baseline, err)
+		}
+		peel.Differential(rep, base, *acceptSignerChanges)
+	}
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

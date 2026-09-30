@@ -10,7 +10,7 @@
 | A lockfile for your dependencies | Every package inside the artifact proven against that lockfile, and every locked package checked against its public registry and signed provenance |
 | A workflow that calls build-onion's three reusable workflows | A build reproduced byte for byte on separate runners before it's signed |
 | *Optional:* a policy, allowed fetch hosts, your own scan jobs | SLSA Build Level 3 provenance, an SBOM and an inventory, signed and attached to each artifact |
-| | Images published by digest, only after `onion peel` verifies them and a reviewer approves |
+| | Images published by digest, only after `onion peel` verifies them (and, given the last release, compares with it) and a reviewer approves |
 | | `onion peel`: a graded, per-check verdict any deploy gate can act on |
 
 Works for any language whose build runs in a container. Lockfile checks cover Go, npm, Python and Rust. build-onion builds, verifies and publishes itself with this pipeline, and [build-onion-example-python](https://github.com/PatterCJ/build-onion-example-python) shows a complete Python service.
@@ -96,6 +96,7 @@ $ onion peel ghcr.io/acme/widget@sha256:… --repo acme/widget --ref 'refs/heads
 | `--ref REFS` | Require the source ref to match one of these globs. |
 | `--source DIR` | Also check a local checkout against the signed snapshot. |
 | `--rebuild` | Also rebuild locally from `--source` and compare (needs Docker). |
+| `--baseline ARTIFACT` | Also verify a previous release and report what changed since it. |
 | `--packages` | List every package found in the artifact, its outcome, and its upstream outcome. |
 | `--bundles DIR` | Verify offline from saved bundles instead of the GitHub attestations API. |
 | `--json` | Print the full report as JSON. |
@@ -117,6 +118,7 @@ Set `GITHUB_TOKEN` when verifying often: unauthenticated GitHub API requests are
 | **scans** | Each recorded scan examined this build and completed. |
 | **dependencies** | Every package inside the artifact is accounted for: declared in the lockfile at the same version (and the same content hash where both carry one), from the pinned base image's layers, or bundled inside a declared package. |
 | **upstream** | Every locked package's bytes are what its public registry publishes, and its provenance, where published, verifies. Private packages are listed as notes. |
+| **differential** | *With `--baseline`:* what changed since the previous release. A dependency that lost its provenance, or is now built by a different repository or workflow, is a finding; other changes are notes. |
 | **source** | *With `--source`:* every file in the checkout matches the signed snapshot. |
 | **rebuild** | *With `--rebuild`:* a local rebuild produces the same bytes. |
 

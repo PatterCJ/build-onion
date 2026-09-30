@@ -103,6 +103,9 @@ jobs:
     uses: ./.github/workflows/onion-publish.yml
     with:
       image-digest: ${{ needs.verify.outputs.image-digest }}
+      # The image the previous push to main published. On tags there is none,
+      # and publish continues with a warning.
+      baseline: ghcr.io/pattercj/build-onion:sha-${{ github.event.before }}
 
   peel:
     name: peel (dogfood)
@@ -114,11 +117,18 @@ jobs:
       packages: read
     env:
       IMAGE: ${{ needs.publish.outputs.image }}
+      # The image the previous push to main published, if it did.
+      BEFORE: ${{ github.event.before }}
     steps:
       - name: The published image peels itself via the attestations API
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          baseline=()
+          prev="${IMAGE%@*}:sha-$BEFORE"
+          if [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]] && docker manifest inspect "$prev" > /dev/null 2>&1; then
+            baseline=(--baseline "$prev")
+          fi
           docker run --rm -e GITHUB_TOKEN -v "$HOME/.docker:/home/nonroot/.docker:ro" "$IMAGE" \
-            peel "$IMAGE" --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            peel "$IMAGE" --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" "${baseline[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

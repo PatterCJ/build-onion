@@ -171,6 +171,7 @@ jobs:
     uses: PatterCJ/build-onion/.github/workflows/onion-publish.yml@<sha>
     with:
       image-digest: ${{ needs.verify.outputs.image-digest }}
+      baseline: ghcr.io/acme/widget:v1.4.0   # optional: the last release
 ```
 
 The `id-token` permission on the build and publish lines only lets each one read its own OIDC claims to pin the build-onion commit it runs; neither can sign. The publish job runs in the `release` environment (change it with the `environment` input). Add required reviewers there to put a human approval in front of every release.
@@ -190,4 +191,21 @@ onion peel "$IMAGE" --repo acme/widget --commit "$EXPECTED_SHA" \
   --ref 'refs/heads/main,refs/tags/v*' --json > peel.json
 ```
 
-`--ref` makes the deploy gate decide which refs it releases from, independent of any policy file in the repository. Set `GITHUB_TOKEN` in the environment to avoid the GitHub API's 60-requests-per-hour unauthenticated limit, or pass `--bundles` to verify offline.
+`--ref` makes the deploy gate decide which refs it releases from, independent of any policy file in the repository.
+
+### Comparing with the last release
+
+`--baseline` (or the publish line's `baseline` input) verifies a previously sealed artifact the same way, then adds a **differential** section:
+
+| Change since the baseline | Grade |
+|---|---|
+| A dependency that published provenance before and doesn't now | FINDING |
+| A dependency now built by a different source repository, workflow or identity provider | FINDING |
+| Dependencies added, removed or at new versions; builder, base images, commands, lockfiles, Dockerfile, allowed hosts, workflow actions, build-onion commit or policy changed | NOTE |
+| A dependency that now publishes provenance | NOTE |
+
+Signers are compared per package across versions, so a new release of a dependency must come from the same repository and workflow as the one before. When a change is expected (a project moved or renamed its release workflow), `--accept-signer-changes` (publish input `accept-signer-changes`) reports it as a note. A baseline that doesn't verify makes the section DEGRADED.
+
+```sh
+onion peel "$IMAGE" --repo acme/widget --baseline ghcr.io/acme/widget:v1.4.0
+``` Set `GITHUB_TOKEN` in the environment to avoid the GitHub API's 60-requests-per-hour unauthenticated limit, or pass `--bundles` to verify offline.
