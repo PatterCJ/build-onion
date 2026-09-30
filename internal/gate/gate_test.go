@@ -326,6 +326,11 @@ func TestRepositoryRequirements(t *testing.T) {
 		}
 	}
 
+	// A pull request build is held to the default branch's rules.
+	if v := f.evalRepo(t, "refs/pull/7/merge", protectedRules, strictRepo()); v.Blocked || v.Repository.Branch != "main" {
+		t.Errorf("pull request: branch %q, blocked by %v", v.Repository.Branch, v.BlockedBy)
+	}
+
 	// No requirements, no check.
 	if v := f.evalRepo(t, "refs/heads/main", "", policy.Default()); v.Repository != nil || v.Blocked {
 		t.Errorf("default policy checked the repository: %+v", v.Repository)

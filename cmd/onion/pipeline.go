@@ -46,7 +46,7 @@ func cmdSource(args []string) error {
 		fs := flag.NewFlagSet("source verify", flag.ExitOnError)
 		var s sourceFlags
 		s.register(fs)
-		snapPath := fs.String("snapshot", "", "snapshot JSON from `onion source snapshot` (required)")
+		snapPath := fs.String("snapshot", "", "snapshot JSON from 'onion source snapshot' (required)")
 		expect := fs.String("expect", "", "require the snapshot to have this digest")
 		fs.Parse(args[1:])
 		m, err := s.load()

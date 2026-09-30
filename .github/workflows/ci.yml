@@ -24,3 +24,16 @@ jobs:
       - run: go test -race ./...
       - name: Validate own manifest and pins
         run: go run ./cmd/onion validate
+
+  # The real build line on every pull request: staged inputs, restricted
+  # fetch, hermetic build and image. An input missing from build.inputs fails
+  # here instead of at release. Pull request builds are never sealed. Fork
+  # pull requests get no OIDC token, so they skip it.
+  build-line:
+    if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/onion-build.yml
+    with:
+      policy: .build-onion/policy.yml

@@ -81,7 +81,7 @@ type Build struct {
 	Run string            `yaml:"run" json:"run"`
 	Env map[string]string `yaml:"env" json:"env,omitempty"`
 	// Scratch lists paths, besides outputs, that fetch or build may create in
-	// the source tree (node_modules, build/). Any other new file fails the build.
+	// the source tree (node_modules, build). Any other new file fails the build.
 	Scratch []string `yaml:"scratch" json:"scratch,omitempty"`
 	// Inputs are globs ("**" spans directories) naming the tracked files fetch
 	// and build may see. The manifest, lockfiles and Dockerfile are always

@@ -1,5 +1,7 @@
 # Adopting build-onion
 
+Every option mentioned here is listed in the [reference](reference.md).
+
 ## 1. Write the manifest
 
 The manifest is the whole contract. Anything not declared is not available to the build.
@@ -14,7 +16,7 @@ The manifest is the whole contract. Anything not declared is not available to th
 | `build.run` / `env` | Runs with `--network none`, as your UID, with `HOME=/tmp`. `env` applies to this step only, not to `fetch`. |
 | `build.inputs` | Globs (`**` spans directories) naming the files fetch and build may read, for example `[src/**, cmd/**/*.go, go.mod]`. The manifest, lockfiles and Dockerfile are always included. Nothing else is staged: tests, fixtures, docs and untracked files don't exist for the build. A pattern that matches nothing fails the build. Without it, the build sees every tracked file and `peel` notes it. |
 | `build.sensitive` | Globs naming your build scripts and build configuration (`Makefile`, `scripts/**`, `*.m4`, `build.rs`). Changes to them are recorded by the gate and shown by `peel`. Each pattern must match a tracked file. |
-| `build.scratch` | Other paths `fetch` or `build` may create in the tree (`node_modules`, `build/`). Any other new file fails the build. |
+| `build.scratch` | Other paths `fetch` or `build` may create in the tree (`node_modules`, `build`). Any other new file fails the build. |
 | `outputs.files` | Must not exist in the source; they must be produced by the build. |
 | `outputs.image` | Built from the Dockerfile with `RUN` steps networkless, as a single-platform reproducible OCI image. Every `FROM` must be pinned. |
 
@@ -171,6 +173,7 @@ jobs:
     uses: PatterCJ/build-onion/.github/workflows/onion-publish.yml@<sha>
     with:
       image-digest: ${{ needs.verify.outputs.image-digest }}
+      baseline: ghcr.io/acme/widget:v1.4.0   # optional: the last release
 ```
 
 The `id-token` permission on the build and publish lines only lets each one read its own OIDC claims to pin the build-onion commit it runs; neither can sign. The publish job runs in the `release` environment (change it with the `environment` input). Add required reviewers there to put a human approval in front of every release.
@@ -190,4 +193,21 @@ onion peel "$IMAGE" --repo acme/widget --commit "$EXPECTED_SHA" \
   --ref 'refs/heads/main,refs/tags/v*' --json > peel.json
 ```
 
-`--ref` makes the deploy gate decide which refs it releases from, independent of any policy file in the repository. Set `GITHUB_TOKEN` in the environment to avoid the GitHub API's 60-requests-per-hour unauthenticated limit, or pass `--bundles` to verify offline.
+`--ref` makes the deploy gate decide which refs it releases from, independent of any policy file in the repository.
+
+### Comparing with the last release
+
+`--baseline` (or the publish line's `baseline` input) verifies a previously sealed artifact the same way, then adds a **differential** section:
+
+| Change since the baseline | Grade |
+|---|---|
+| A dependency that published provenance before and doesn't now | FINDING |
+| A dependency now built by a different source repository, workflow or identity provider | FINDING |
+| Dependencies added, removed or at new versions; builder, base images, commands, lockfiles, Dockerfile, allowed hosts, workflow actions, build-onion commit or policy changed | NOTE |
+| A dependency that now publishes provenance | NOTE |
+
+Signers are compared per package across versions, so a new release of a dependency must come from the same repository and workflow as the one before. When a change is expected (a project moved or renamed its release workflow), `--accept-signer-changes` (publish input `accept-signer-changes`) reports it as a note. A baseline that doesn't verify makes the section DEGRADED.
+
+```sh
+onion peel "$IMAGE" --repo acme/widget --baseline ghcr.io/acme/widget:v1.4.0
+``` Set `GITHUB_TOKEN` in the environment to avoid the GitHub API's 60-requests-per-hour unauthenticated limit, or pass `--bundles` to verify offline.

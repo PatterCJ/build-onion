@@ -10,6 +10,7 @@
 #       uses: PatterCJ/build-onion/.github/workflows/onion-publish.yml@<commit sha>
 #       with:
 #         image-digest: ${{ needs.verify.outputs.image-digest }}
+#         baseline: ghcr.io/acme/widget:v1.4.0      # optional: the last release
 #
 # Jobs:
 #   resolve   pin this workflow's own build-onion commit (from OIDC; read for
@@ -33,6 +34,18 @@ on:
         description: Sealed image digest from onion-verify.yml (empty if none).
         type: string
         default: ""
+      baseline:
+        description: >-
+          A previously published image to compare the new one with, usually the
+          last release (e.g. ghcr.io/acme/widget:v1.4.0). Dependencies that lost
+          provenance or changed signer since then block publishing. Skipped with
+          a warning if the image doesn't exist.
+        type: string
+        default: ""
+      accept-signer-changes:
+        description: Report dependency provenance and signer changes against the baseline as notes instead of blocking.
+        type: boolean
+        default: false
     outputs:
       image:
         description: Published image reference, pinned by digest (empty if none).
@@ -46,6 +59,8 @@ env:
   BUNDLES: /tmp/onion-bundles
   MANIFEST: ${{ inputs.manifest }}
   IMAGE_DIGEST: ${{ inputs.image-digest }}
+  BASELINE: ${{ inputs.baseline }}
+  ACCEPT_SIGNER_CHANGES: ${{ inputs.accept-signer-changes }}
 
 jobs:
   resolve:
@@ -120,16 +135,29 @@ jobs:
           name: onion-bundles
           path: ${{ env.BUNDLES }}
       - name: Peel every output before it leaves
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           echo "${{ needs.resolve.outputs.cli-digest }}  $ONION" | sha256sum -c
           chmod +x "$ONION"
+          # The baseline's bundles come from the attestations API.
+          baseline=()
+          if [ -n "$BASELINE" ]; then
+            echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            if skopeo inspect --raw "docker://$BASELINE" > /dev/null; then
+              baseline=(--baseline "$BASELINE")
+              [ "$ACCEPT_SIGNER_CHANGES" = true ] && baseline+=(--accept-signer-changes)
+            else
+              echo "::warning::baseline $BASELINE not found; publishing without comparing to it"
+            fi
+          fi
           peel() { "$ONION" peel "$@" --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" \
             --signer "$SIGNER" --bundles "$BUNDLES" --source . | tee -a "$GITHUB_STEP_SUMMARY"; }
           shopt -s nullglob  # an image-only manifest has no files
           for f in "$VERIFIED"/out/files/*; do peel "$f"; done
           if [ -f "$VERIFIED/out/image.tar" ]; then
             test "$("$ONION" digest --oci "$VERIFIED/out/image.tar")" = "$IMAGE_DIGEST"
-            peel "$VERIFIED/out/image.tar" --oci
+            GITHUB_TOKEN=$GH_TOKEN peel "$VERIFIED/out/image.tar" --oci "${baseline[@]}"
           fi
       - name: Push the verified image by digest
         id: push

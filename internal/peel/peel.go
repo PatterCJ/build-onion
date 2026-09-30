@@ -1,8 +1,8 @@
 // Package peel runs the reverse check. Starting from an artifact digest it
 // removes one layer at a time — seal, provenance, inventory, gate,
-// verification, pipeline, scans, dependencies, upstream, source, rebuild —
-// and checks that each layer agrees with the one beneath it and with what
-// the caller claims the artifact is.
+// verification, pipeline, scans, dependencies, upstream, differential,
+// source, rebuild — and checks that each layer agrees with the one beneath it
+// and with what the caller claims the artifact is.
 //
 // Every check is graded, and the report's verdict is the worst grade present.
 // Incomplete evidence is never reported as clean: a check that could not be
@@ -81,6 +81,8 @@ type Report struct {
 	Packages []deps.Result `json:"packages,omitempty"`
 	// Upstream is every locked package's registry check, as sealed.
 	Upstream []upstream.Result `json:"upstream,omitempty"`
+
+	inv *inventory.Inventory // the verified inventory, for Differential
 }
 
 // ExitCode is 0 for Passed, 3 for Degraded or Unsupported, 4 for Finding and
@@ -237,6 +239,7 @@ func Run(in Input) *Report {
 	haveInv := false
 	if v := verified[inventory.PredicateType]; v != nil && decode(r, "inventory", v.Statement.Predicate, &inv) {
 		haveInv = true
+		r.inv = &inv
 		r.check("inventory", "same source commit", inv.Source.Commit == in.Claim.Commit && in.Claim.Commit != "", Finding,
 			"inventory %s, provenance %s", inv.Source.Commit, in.Claim.Commit)
 		r.check("inventory", "same run", prov.RunDetails.Metadata.InvocationID == "" || sameRun(inv.Run.InvocationURL, prov.RunDetails.Metadata.InvocationID), Finding,
