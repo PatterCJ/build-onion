@@ -41,6 +41,12 @@ on:
 
 permissions: {}
 
+# Every step runs with -e -o pipefail: a failing command in a pipe (such as
+# `onion peel | tee`) fails the step.
+defaults:
+  run:
+    shell: bash
+
 # Caller inputs reach scripts only through env, never ${{ }} interpolation into
 # `run:`, so a crafted input cannot execute in the signing job.
 env:

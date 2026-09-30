@@ -53,6 +53,12 @@ on:
 
 permissions: {}
 
+# Every step runs with -e -o pipefail: a failing command in a pipe (such as
+# `onion peel | tee`) fails the step.
+defaults:
+  run:
+    shell: bash
+
 env:
   ONION: /tmp/onion-publish-bin/onion
   VERIFIED: /tmp/onion-verified

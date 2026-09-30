@@ -6,6 +6,12 @@ on:
 permissions:
   contents: read
 
+# Every step runs with -e -o pipefail: a failing command in a pipe (such as
+# `onion peel | tee`) fails the step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     runs-on: ubuntu-24.04
