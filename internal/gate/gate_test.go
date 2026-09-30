@@ -251,3 +251,119 @@ func TestPresets(t *testing.T) {
 		t.Error("autotools preset doesn't cover m4 macros")
 	}
 }
+
+// A "rules for a branch" response for a branch with a pull-request ruleset.
+const protectedRules = `[
+  {"type":"deletion","ruleset_source_type":"Repository","ruleset_id":1},
+  {"type":"non_fast_forward","ruleset_source_type":"Repository","ruleset_id":1},
+  {"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true,"dismiss_stale_reviews_on_push":true},"ruleset_source_type":"Repository","ruleset_id":1}
+]`
+
+func strictRepo() *policy.Policy {
+	pol := policy.Default()
+	pol.Repository = policy.Repository{RequirePullRequest: true, MinApprovals: 1, RequireCodeOwnerReview: true,
+		BlockForcePush: true, RequireCodeOwners: true, TagsFromDefaultBranch: true}
+	return pol
+}
+
+func (f *fixture) evalRepo(t *testing.T, ref string, rules string, pol *policy.Policy) *Verdict {
+	t.Helper()
+	p := Params{SourceDir: f.dir, ManifestPath: "build-onion.yml", DefaultBranch: "main",
+		Context: Context{Platform: "test", Event: "push", Ref: ref}}
+	if rules != "" {
+		p.BranchRules = []byte(rules)
+	}
+	v, err := Evaluate(p, pol, f.m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func (f *fixture) git(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", f.dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestRepositoryRequirements(t *testing.T) {
+	f := setup(t)
+	os.MkdirAll(filepath.Join(f.dir, ".github"), 0o755)
+	os.WriteFile(filepath.Join(f.dir, ".github/CODEOWNERS"), []byte("* @acme/devs\n"), 0o644)
+	f.git(t, "add", ".")
+	f.git(t, "commit", "-qm", "owners")
+	f.git(t, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+	v := f.evalRepo(t, "refs/heads/main", protectedRules, strictRepo())
+	if v.Blocked || v.Repository == nil || v.Repository.Approvals != 1 || !v.Repository.CodeOwnerReview || v.Repository.OwnedSensitive == 0 {
+		t.Fatalf("protected repo blocked: %+v %v", v.Repository, v.BlockedBy)
+	}
+
+	cases := map[string]struct {
+		rules string
+		mut   func(*policy.Policy)
+		want  string
+	}{
+		"no rules supplied":    {"", nil, "were not provided"},
+		"no pull requests":     {`[{"type":"non_fast_forward"}]`, nil, "doesn't require pull requests"},
+		"too few approvals":    {protectedRules, func(p *policy.Policy) { p.Repository.MinApprovals = 2 }, "requires 1 approval(s); policy requires 2"},
+		"force push allowed":   {`[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true}}]`, nil, "allows force pushes"},
+		"no code-owner review": {`[{"type":"non_fast_forward"},{"type":"pull_request","parameters":{"required_approving_review_count":1}}]`, nil, "doesn't require code-owner review"},
+		"unreadable rules":     {`{"not":"a list"}`, nil, "unreadable"},
+	}
+	for name, c := range cases {
+		pol := strictRepo()
+		if c.mut != nil {
+			c.mut(pol)
+		}
+		v := f.evalRepo(t, "refs/heads/main", c.rules, pol)
+		if !v.Blocked || !strings.Contains(strings.Join(v.BlockedBy, "; "), c.want) {
+			t.Errorf("%s: blocked=%v %v", name, v.Blocked, v.BlockedBy)
+		}
+	}
+
+	// No requirements, no check.
+	if v := f.evalRepo(t, "refs/heads/main", "", policy.Default()); v.Repository != nil || v.Blocked {
+		t.Errorf("default policy checked the repository: %+v", v.Repository)
+	}
+}
+
+func TestCodeOwnersCoverage(t *testing.T) {
+	f := setup(t)
+	pol := policy.Default()
+	pol.Repository.RequireCodeOwners = true
+	if v := f.evalRepo(t, "refs/heads/main", "", pol); !strings.Contains(strings.Join(v.BlockedBy, ";"), "no CODEOWNERS file") {
+		t.Fatalf("missing CODEOWNERS not caught: %v", v.BlockedBy)
+	}
+	// Owns only go.sum: the workflow file (build configuration) is unowned.
+	os.WriteFile(filepath.Join(f.dir, "CODEOWNERS"), []byte("go.sum @acme/build\n"), 0o644)
+	f.git(t, "add", ".")
+	f.git(t, "commit", "-qm", "partial owners")
+	v := f.evalRepo(t, "refs/heads/main", "", pol)
+	if !v.Blocked || len(v.Repository.Unowned) == 0 || !strings.Contains(strings.Join(v.Repository.Unowned, ","), ".github/workflows/ci.yml") {
+		t.Fatalf("unowned build file not caught: %+v", v.Repository)
+	}
+}
+
+func TestTagsFromDefaultBranch(t *testing.T) {
+	f := setup(t)
+	pol := policy.Default()
+	pol.Repository.TagsFromDefaultBranch = true
+	f.git(t, "update-ref", "refs/remotes/origin/main", "HEAD")
+	if v := f.evalRepo(t, "refs/tags/v1.0.0", "", pol); v.Blocked || v.Repository.TagOnDefault == nil || !*v.Repository.TagOnDefault {
+		t.Fatalf("tag on main blocked: %+v %v", v.Repository, v.BlockedBy)
+	}
+	// A commit that never went through main, then tagged.
+	f.git(t, "commit", "-q", "--allow-empty", "-m", "unreviewed")
+	if v := f.evalRepo(t, "refs/tags/v1.0.1", "", pol); !v.Blocked || !strings.Contains(strings.Join(v.BlockedBy, ";"), "not on main") {
+		t.Fatalf("unreviewed tag not blocked: %v", v.BlockedBy)
+	}
+	// Branch pushes aren't subject to the tag rule.
+	if v := f.evalRepo(t, "refs/heads/main", "", pol); v.Blocked {
+		t.Fatalf("branch push blocked by the tag rule: %v", v.BlockedBy)
+	}
+}

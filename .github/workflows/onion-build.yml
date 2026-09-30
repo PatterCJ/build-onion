@@ -193,6 +193,20 @@ jobs:
         with:
           name: onion-snapshot
           path: /tmp/onion-snap
+      - name: Read branch rules (read-only token)
+        # Only the policy's repository requirements use these. A failed read
+        # leaves no file, which fails the gate only if they're required.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          mkdir -p /tmp/onion-gate
+          branch=${GITHUB_REF#refs/heads/}
+          [[ "$GITHUB_REF" == refs/heads/* ]] || branch=$DEFAULT_BRANCH
+          enc=$(jq -rn --arg b "$branch" '$b|@uri')
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/rules/branches/$enc" -o /tmp/onion-gate/branch-rules.json \
+            || { echo "::warning::could not read the rules for $branch"; rm -f /tmp/onion-gate/branch-rules.json; }
       - name: Gate — may this commit be built and released?
         id: gate
         env:
@@ -200,7 +214,10 @@ jobs:
           BASE: ${{ github.event.before || github.event.pull_request.base.sha }}
           FORK: ${{ github.event.pull_request.head.repo.fork || false }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          rules=()
+          [ -f /tmp/onion-gate/branch-rules.json ] && rules=(--branch-rules /tmp/onion-gate/branch-rules.json)
           echo "${{ needs.resolve.outputs.cli-digest }}  $ONION" | sha256sum -c
           chmod +x "$ONION"
           "$ONION" source verify --manifest "$MANIFEST" --snapshot /tmp/onion-snap/source.json --expect "$SNAPSHOT"
@@ -209,6 +226,7 @@ jobs:
             --repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --platform github-actions --event "$GITHUB_EVENT_NAME" --ref "$GITHUB_REF" \
             --base "$BASE" --fork="$FORK" --actor "$GITHUB_ACTOR" --run-url "$RUN_URL" \
+            --default-branch "$DEFAULT_BRANCH" "${rules[@]}" \
             --out /tmp/onion-gate/gate.json \
             --github-output "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

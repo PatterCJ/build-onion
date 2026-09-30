@@ -23,6 +23,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/deps"
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
+	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
@@ -327,6 +328,11 @@ func checkGate(r *Report, inv *inventory.Inventory) {
 	if len(g.SensitiveChange) > 0 {
 		r.grade("gate", "build-sensitive change", Note, "this commit changed %s", strings.Join(g.SensitiveChange, ", "))
 	}
+	if rc := g.Repository; rc != nil {
+		checkRepoProtections(r, rc)
+	} else {
+		r.grade("gate", "repository protections", Note, "not required by the policy")
+	}
 	if len(g.OpaqueInputs) > 0 {
 		r.grade("gate", "binary change the build can read", Note, "%s", strings.Join(g.OpaqueInputs, ", "))
 	}
@@ -380,6 +386,28 @@ func checkEgress(r *Report, inv *inventory.Inventory) {
 	}
 	r.grade("egress", "fetch connections", Passed, "%d connection(s) to %d destination(s), all within the allow-list (%s)",
 		total, len(hosts), strings.Join(declared, ", "))
+}
+
+// checkRepoProtections reports what the gate verified about the repository.
+// The gate blocks a build when a requirement fails, so a sealed inventory
+// should only ever show passing checks; anything else is a finding.
+func checkRepoProtections(r *Report, rc *gate.RepoCheck) {
+	if !r.check("gate", "repository protections", len(rc.Problems) == 0, Finding, "%s", strings.Join(rc.Problems, "; ")) {
+		return
+	}
+	if len(rc.Rules) > 0 {
+		review := "no code-owner review"
+		if rc.CodeOwnerReview {
+			review = "code-owner review"
+		}
+		r.grade("gate", "branch rules", Passed, "%s: %d approval(s), %s; rules %s", rc.Branch, rc.Approvals, review, strings.Join(rc.Rules, ", "))
+	}
+	if rc.CodeOwnersFile != "" {
+		r.grade("gate", "code owners", Passed, "%s owns all %d build-configuration file(s)", rc.CodeOwnersFile, rc.OwnedSensitive)
+	}
+	if rc.TagOnDefault != nil {
+		r.grade("gate", "tag on default branch", Passed, "tagged commit is on %s", rc.Branch)
+	}
 }
 
 // checkVerification reads the security line's record: an independent rebuild
