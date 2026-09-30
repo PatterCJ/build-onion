@@ -22,6 +22,9 @@ import (
 
 const APIVersion = "build-onion/policy/v1"
 
+// DefaultPath is where the gate looks for a policy when none is named.
+const DefaultPath = ".build-onion/policy.yml"
+
 type Policy struct {
 	APIVersion string  `yaml:"apiVersion" json:"apiVersion"`
 	Release    Release `yaml:"release" json:"release"`

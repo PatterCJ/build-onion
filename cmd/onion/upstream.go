@@ -93,6 +93,10 @@ func printUpstream(rec upstream.Record, all bool) {
 			detail = r.Attestations[0].Repository
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.Ecosystem, r.Name, r.Version, r.Outcome, detail)
+		switch r.Outcome {
+		case upstream.Mismatch, upstream.Invalid, upstream.Error:
+			annotate("warning", fmt.Sprintf("onion upstream: %s %s %s@%s", r.Outcome, r.Ecosystem, r.Name, r.Version), r.Detail)
+		}
 	}
 	tw.Flush()
 	fmt.Fprintf(os.Stderr, "upstream: %d package(s):", len(rec.Results))

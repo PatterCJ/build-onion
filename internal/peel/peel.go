@@ -10,6 +10,7 @@
 package peel
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -28,9 +29,11 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/tagsig"
 	"github.com/PatterCJ/build-onion/internal/trust"
 	"github.com/PatterCJ/build-onion/internal/upstream"
 	"github.com/PatterCJ/build-onion/internal/verify"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -288,6 +291,9 @@ func Run(in Input) *Report {
 			r.grade("inventory", "build inputs", Passed, "the build saw %d of %d tracked files (%s)", bi.Files, bi.Of, strings.Join(bi.Patterns, ", "))
 		}
 		checkGate(r, &inv)
+		if in.Trust != nil {
+			checkAppSigner(r, in.Trust, in.Claim.Repository, &inv)
+		}
 		checkEgress(r, &inv)
 		checkVerification(r, &inv, in.Digest)
 		checkPipeline(r, &inv)
@@ -391,6 +397,52 @@ func checkGate(r *Report, inv *inventory.Inventory) {
 		// context does. Tag pushes and first pushes have no diff base.
 		r.grade("gate", "change set", Note, "not computed; no previous build point to diff against")
 	}
+}
+
+// checkAppSigner holds the artifact's release tag to the signers the trust
+// file lists for its repository. A repository the trust file doesn't list is
+// noted, not graded.
+func checkAppSigner(r *Report, t *trust.File, repo string, inv *inventory.Inventory) {
+	app := t.App(repo)
+	if app == nil {
+		r.grade("gate", "release tag signer trusted", Note, "the trust file has no apps entry for %s; its tag signers aren't pinned", repo)
+		return
+	}
+	signer := ""
+	if inv.Gate != nil {
+		signer = inv.Gate.TagSigner
+	}
+	allowed, err := tagsig.Keys(app.TagSigners)
+	if err != nil {
+		r.grade("gate", "release tag signer trusted", Failed, "%v", err)
+		return
+	}
+	var fps []string
+	for _, k := range allowed {
+		fps = append(fps, ssh.FingerprintSHA256(k))
+	}
+	if signer == "" {
+		ref := ""
+		if inv.Gate != nil {
+			ref = inv.Gate.Context.Ref
+		}
+		r.grade("gate", "release tag signer trusted", Finding, "%s requires a tag signed by %s; this was built from %s with no verified tag signature",
+			repo, strings.Join(fps, ", "), orNone(ref))
+		return
+	}
+	got, _, _, _, err := ssh.ParseAuthorizedKey([]byte(signer))
+	if err != nil {
+		r.grade("gate", "release tag signer trusted", Failed, "recorded signer unreadable: %v", err)
+		return
+	}
+	for _, k := range allowed {
+		if bytes.Equal(k.Marshal(), got.Marshal()) {
+			r.grade("gate", "release tag signer trusted", Passed, "signed by %s, allowed for %s", ssh.FingerprintSHA256(got), repo)
+			return
+		}
+	}
+	r.grade("gate", "release tag signer trusted", Finding, "signed by %s; the trust file allows %s for %s",
+		ssh.FingerprintSHA256(got), strings.Join(fps, ", "), repo)
 }
 
 // checkEgress grades the fetch step's network: an allow-list with every

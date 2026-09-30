@@ -94,6 +94,7 @@ func main() {
 			os.Exit(int(exit))
 		}
 		fmt.Fprintln(os.Stderr, "onion:", err)
+		annotate("error", "onion "+os.Args[1], err.Error())
 		os.Exit(1)
 	}
 }
@@ -494,6 +495,7 @@ func cmdPeel(args []string) error {
 			printPackages(os.Stdout, rep)
 		}
 	}
+	annotateReport(rep)
 	if code := rep.ExitCode(*allowDegraded); code != 0 {
 		return exitCode(code)
 	}
