@@ -75,7 +75,7 @@ repository:
   tagsFromDefaultBranch: true   # a tag release must point at a commit on the default branch
 ```
 
-Branch requirements are read from [rulesets](https://docs.github.com/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets); classic branch protection settings need admin access to read, so they aren't used. For tag releases, the default branch's rules are checked. The verified protections are recorded in the signed inventory, and `peel` lists them in its gate section.
+Branch requirements are read from [rulesets](https://docs.github.com/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets); classic branch protection settings need admin access to read, so they aren't used. For tag releases and pull request builds, the default branch's rules are checked. The verified protections are recorded in the signed inventory, and `peel` lists them in its gate section.
 
 On a repository with a single maintainer, GitHub won't let you approve your own pull request, so leave `minApprovals` at 0 and `requireCodeOwnerReview` off. `requirePullRequest`, `blockForcePush`, `requireCodeOwners` and `tagsFromDefaultBranch` still apply.
 

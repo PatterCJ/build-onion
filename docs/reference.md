@@ -124,7 +124,7 @@ repository:
 | `repository.requireCodeOwners` | `false` | `CODEOWNERS` must name an owner for every build-configuration file. |
 | `repository.tagsFromDefaultBranch` | `false` | A tag release must point at a commit on the default branch. |
 
-Branch requirements are read from rulesets with the workflow's read-only token; for a tag release, the default branch's rules are checked.
+Branch requirements are read from rulesets with the workflow's read-only token; for a tag release or a pull request build, the default branch's rules are checked.
 
 ## Reusable workflows
 

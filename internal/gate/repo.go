@@ -16,7 +16,7 @@ import (
 // present only when the policy requires some.
 type RepoCheck struct {
 	// Branch is the branch whose rules were read: the pushed branch, or the
-	// default branch for a tag.
+	// default branch for a tag or pull request.
 	Branch          string   `json:"branch"`
 	Rules           []string `json:"rules,omitempty"` // active rule types
 	Approvals       int      `json:"approvals"`
@@ -48,7 +48,8 @@ func checkRepository(p Params, pol *policy.Policy, m *manifest.Manifest) *RepoCh
 	rc := &RepoCheck{Branch: strings.TrimPrefix(p.Context.Ref, "refs/heads/")}
 	problem := func(f string, a ...any) { rc.Problems = append(rc.Problems, fmt.Sprintf(f, a...)) }
 	isTag := strings.HasPrefix(p.Context.Ref, "refs/tags/")
-	if isTag {
+	if !strings.HasPrefix(p.Context.Ref, "refs/heads/") {
+		// Tags and pull request refs are held to the default branch's rules.
 		rc.Branch = p.DefaultBranch
 	}
 
