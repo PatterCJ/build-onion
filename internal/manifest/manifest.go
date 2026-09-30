@@ -88,6 +88,10 @@ type Build struct {
 	// included. Everything else — tests, fixtures, docs — isn't staged, so
 	// the build can't read it. Empty means every tracked file.
 	Inputs []string `yaml:"inputs" json:"inputs,omitempty"`
+	// Sensitive are globs naming this repo's own build scripts (Makefile,
+	// scripts/**, *.m4, build.rs, …). Changes to them are flagged by the gate.
+	// Each pattern must match at least one tracked file.
+	Sensitive []string `yaml:"sensitive" json:"sensitive,omitempty"`
 }
 
 type Outputs struct {
@@ -183,9 +187,15 @@ func (m *Manifest) Validate() error {
 	if strings.TrimSpace(m.Build.Run) == "" {
 		add("build.run is required")
 	}
-	for _, g := range m.Build.Inputs {
-		if !inputGlobRe.MatchString(g) || strings.HasPrefix(g, "/") || strings.Contains("/"+g+"/", "/../") {
-			add("build.inputs: %q must be a relative glob of letters, digits, . _ + / - * ?", g)
+	for _, fg := range []struct {
+		field string
+		globs []string
+	}{{"build.inputs", m.Build.Inputs}, {"build.sensitive", m.Build.Sensitive}} {
+		field := fg.field
+		for _, g := range fg.globs {
+			if !inputGlobRe.MatchString(g) || strings.HasPrefix(g, "/") || strings.Contains("/"+g+"/", "/../") {
+				add("%s: %q must be a relative glob of letters, digits, . _ + / - * ?", field, g)
+			}
 		}
 	}
 	for _, p := range m.Build.Scratch {

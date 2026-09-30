@@ -80,3 +80,15 @@ func TestFinalBase(t *testing.T) {
 		}
 	}
 }
+
+func TestSensitiveCoverage(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "Makefile"), "all:\n")
+	write(t, filepath.Join(dir, "m4/build-to-host.m4"), "dnl\n")
+	if err := sensitiveCoverage(dir, []string{"Makefile", "**/*.m4"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sensitiveCoverage(dir, []string{"Makefile", "scripts/**"}); err == nil || !strings.Contains(err.Error(), `"scripts/**"`) {
+		t.Fatalf("stale pattern accepted: %v", err)
+	}
+}

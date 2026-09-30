@@ -1,6 +1,7 @@
 package gate
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/policy"
+	"github.com/PatterCJ/build-onion/internal/source"
 )
 
 type fixture struct {
@@ -143,5 +145,109 @@ func TestRequireBuildInputs(t *testing.T) {
 	f.m.Build.Inputs = []string{"*.go"}
 	if v := f.eval(t, "push", "refs/heads/main", "", pol); v.Blocked {
 		t.Fatalf("declared inputs still blocked: %+v", v)
+	}
+}
+
+func TestIsOpaque(t *testing.T) {
+	dir := t.TempDir()
+	cases := map[string]struct {
+		body   []byte
+		opaque bool
+	}{
+		"source.go":   {[]byte("package main\n\nfunc main() {}\n"), false},
+		"unicode.md":  {[]byte("héllo — ✓ 日本語\n"), false},
+		"empty":       {nil, false},
+		"payload.xz":  {[]byte{0xfd, '7', 'z', 'X', 'Z', 0x00, 0x00, 0x04}, true},
+		"latin1.txt":  {[]byte{'c', 'a', 'f', 0xe9, '\n'}, true},
+		"image.png":   {[]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00}, true},
+		"boundary.md": {append(bytes.Repeat([]byte("a"), 8<<10-1), []byte("é tail")...), false}, // é split at 8 KiB
+	}
+	for name, c := range cases {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, c.body, 0o644)
+		got, err := IsOpaque(p)
+		if err != nil || got != c.opaque {
+			t.Errorf("%s: opaque=%v err=%v, want %v", name, got, err, c.opaque)
+		}
+	}
+	if got, err := IsOpaque(filepath.Join(dir, "deleted")); got || err != nil {
+		t.Errorf("deleted file: %v %v", got, err)
+	}
+}
+
+func TestSensitiveSources(t *testing.T) {
+	f := setup(t)
+	// setup's head commit changed main.go, go.sum and .github/workflows/ci.yml.
+	pol := policy.Default()
+	v := f.eval(t, "push", "refs/heads/main", f.base, pol)
+	if got := strings.Join(v.SensitiveChange, ","); got != ".github/workflows/ci.yml,go.sum" {
+		t.Fatalf("built-in only: %s", got)
+	}
+	// The repo declares its own build scripts.
+	f.m.Build.Sensitive = []string{"*.go"}
+	v = f.eval(t, "push", "refs/heads/main", f.base, pol)
+	if !strings.Contains(strings.Join(v.SensitiveChange, ","), "main.go") {
+		t.Fatalf("build.sensitive ignored: %v", v.SensitiveChange)
+	}
+}
+
+func TestOpaqueInputs(t *testing.T) {
+	f := setup(t)
+	gitc := func(args ...string) {
+		cmd := exec.Command("git", append([]string{"-C", f.dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	base := strings.TrimSpace(func() string {
+		out, _ := exec.Command("git", "-C", f.dir, "rev-parse", "HEAD").Output()
+		return string(out)
+	}())
+	os.MkdirAll(filepath.Join(f.dir, "tests/files"), 0o755)
+	os.WriteFile(filepath.Join(f.dir, "tests/files/bad-3-corrupt.xz"), []byte{0xfd, '7', 'z', 0x00, 0x01}, 0o644)
+	os.WriteFile(filepath.Join(f.dir, "logo.png"), []byte{0x89, 'P', 'N', 'G', 0x00}, 0o644)
+	gitc("add", ".")
+	gitc("commit", "-qm", "fixtures")
+
+	f.m.Build.Inputs = []string{"*.go", "*.png"}
+	pol := policy.Default()
+	v := f.eval(t, "push", "refs/heads/main", base, pol)
+	if strings.Join(v.OpaqueChange, ",") != "logo.png,tests/files/bad-3-corrupt.xz" || strings.Join(v.OpaqueInputs, ",") != "logo.png" {
+		t.Fatalf("opaque %v, in inputs %v", v.OpaqueChange, v.OpaqueInputs)
+	}
+	if v.Blocked {
+		t.Fatal("blocked without blockOpaqueInputs")
+	}
+	pol.BlockOpaqueInputs = true
+	if v := f.eval(t, "push", "refs/heads/main", base, pol); !v.Blocked {
+		t.Fatal("binary input change not blocked under blockOpaqueInputs")
+	}
+	// The test fixture isn't a build input, so it alone doesn't block.
+	f.m.Build.Inputs = []string{"*.go"}
+	if v := f.eval(t, "push", "refs/heads/main", base, pol); v.Blocked {
+		t.Fatalf("fixture outside build.inputs blocked: %v", v.BlockedBy)
+	}
+}
+
+func TestPresets(t *testing.T) {
+	names := policy.PresetNames()
+	if len(names) < 10 {
+		t.Fatalf("presets = %v", names)
+	}
+	p := filepath.Join(t.TempDir(), "policy.yml")
+	os.WriteFile(p, []byte("apiVersion: build-onion/policy/v1\nsensitivePresets: [autotools, nope]\n"), 0o644)
+	if _, _, err := policy.Load(p); err == nil || !strings.Contains(err.Error(), `unknown preset "nope"`) {
+		t.Fatalf("unknown preset: %v", err)
+	}
+	pol := policy.Default()
+	pol.SensitivePresets = []string{"autotools"}
+	found := false
+	for _, pat := range pol.PresetPatterns() {
+		if source.Match(pat, "m4/build-to-host.m4") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("autotools preset doesn't cover m4 macros")
 	}
 }

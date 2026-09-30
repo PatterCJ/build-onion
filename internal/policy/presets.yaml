@@ -1,0 +1,64 @@
+# Named sets of build-system files a policy can opt into with
+# sensitivePresets. They only add paths to watch; nothing is required to
+# match. Repos declare their own build scripts in build.sensitive.
+autotools:
+  - configure
+  - configure.ac
+  - configure.in
+  - aclocal.m4
+  - "**/*.m4"
+  - "**/Makefile.am"
+  - "**/Makefile.in"
+  - build-aux/**
+bazel:
+  - "**/BUILD"
+  - "**/BUILD.bazel"
+  - "**/*.bzl"
+  - WORKSPACE
+  - WORKSPACE.bazel
+  - MODULE.bazel
+  - .bazelrc
+cmake:
+  - "**/CMakeLists.txt"
+  - "**/*.cmake"
+  - CMakePresets.json
+docker:
+  - "**/Dockerfile"
+  - "**/Dockerfile.*"
+  - "**/*.dockerfile"
+  - .dockerignore
+go:
+  - go.mod
+  - go.work
+gradle:
+  - "**/build.gradle"
+  - "**/build.gradle.kts"
+  - "**/settings.gradle"
+  - "**/settings.gradle.kts"
+  - gradle/**
+  - gradlew
+make:
+  - "**/Makefile"
+  - "**/GNUmakefile"
+  - "**/*.mk"
+maven:
+  - "**/pom.xml"
+  - .mvn/**
+  - mvnw
+meson:
+  - "**/meson.build"
+  - meson_options.txt
+  - meson.options
+node:
+  - "**/package.json"
+  - .npmrc
+  - "**/.npmrc"
+python:
+  - "**/setup.py"
+  - "**/setup.cfg"
+  - "**/pyproject.toml"
+  - "**/MANIFEST.in"
+rust:
+  - "**/Cargo.toml"
+  - "**/build.rs"
+  - .cargo/**

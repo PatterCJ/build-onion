@@ -28,6 +28,9 @@ build:
     - go.mod
     - cmd/**/*.go
     - internal/**/*.go
+  # Build configuration beyond the lockfile; changes to it are flagged.
+  sensitive:
+    - go.mod
   # Runs with --network none against the fetched module cache.
   run: go build -ldflags="-s -w -buildid=" -o dist/onion ./cmd/onion
   env:

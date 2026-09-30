@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/PatterCJ/build-onion/internal/manifest"
+	"github.com/PatterCJ/build-onion/internal/source"
 )
 
 var (
@@ -39,7 +41,58 @@ func Repo(root string, m *manifest.Manifest) error {
 		errs = append(errs, Dockerfile(filepath.Join(root, img.Dockerfile)))
 	}
 	errs = append(errs, Workflows(filepath.Join(root, ".github", "workflows")))
+	errs = append(errs, sensitiveCoverage(root, m.Build.Sensitive))
 	return errors.Join(errs...)
+}
+
+// sensitiveCoverage requires every build.sensitive pattern to match a tracked
+// file, so a renamed or moved build script can't silently drop out of the list.
+func sensitiveCoverage(root string, patterns []string) error {
+	if len(patterns) == 0 {
+		return nil
+	}
+	files, err := trackedFiles(root)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, pat := range patterns {
+		hit := false
+		for _, f := range files {
+			if source.Match(pat, f) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			errs = append(errs, fmt.Errorf("build.sensitive pattern %q matches no tracked file", pat))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// trackedFiles lists git-tracked files under root, or every file when root
+// isn't a git checkout.
+func trackedFiles(root string) ([]string, error) {
+	if out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output(); err == nil {
+		var files []string
+		for _, f := range strings.Split(string(out), "\x00") {
+			if f != "" {
+				files = append(files, f)
+			}
+		}
+		return files, nil
+	}
+	var files []string
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(root, p)
+		files = append(files, filepath.ToSlash(rel))
+		return err
+	})
+	return files, err
 }
 
 // Dockerfile requires every external FROM to be pinned by digest. Stages that

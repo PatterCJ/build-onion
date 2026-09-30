@@ -327,6 +327,12 @@ func checkGate(r *Report, inv *inventory.Inventory) {
 	if len(g.SensitiveChange) > 0 {
 		r.grade("gate", "build-sensitive change", Note, "this commit changed %s", strings.Join(g.SensitiveChange, ", "))
 	}
+	if len(g.OpaqueInputs) > 0 {
+		r.grade("gate", "binary change the build can read", Note, "%s", strings.Join(g.OpaqueInputs, ", "))
+	}
+	if n := len(g.OpaqueChange) - len(g.OpaqueInputs); n > 0 {
+		r.grade("gate", "binary change outside build inputs", Note, "%d file(s), not visible to the build", n)
+	}
 	if !g.ChangeKnown {
 		// The release rules above don't depend on the diff; only this
 		// context does. Tag pushes and first pushes have no diff base.
