@@ -1,8 +1,9 @@
 apiVersion: build-onion/policy/v1
 
-# A tag releases only if it is signed by one of these keys and points at the
-# commit being built.
+# Only signed v* tags release, and only if signed by one of these keys and
+# pointing at the commit being built. Branch builds are checked, not sealed.
 release:
+  refs: [refs/tags/v*]
   tagSigners:
     - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJkCMZITdqwz1HgiMqqI8TkJmT0MAnE723Nl24woUkCl build-onion release key
 
