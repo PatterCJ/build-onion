@@ -36,8 +36,9 @@ import (
 	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
-// version is set at build time with -ldflags "-X main.version=…".
-var version = "dev"
+// version is set in source, so a tag and the commit it points at build the
+// same bytes.
+var version = "0.1.0"
 
 // defaultSigner is the security line: the only workflow that seals builds.
 const defaultSigner = "PatterCJ/build-onion/.github/workflows/onion-verify.yml"
