@@ -1,6 +1,6 @@
 # Policy
 
-The **manifest** (`build-onion.yml`) belongs to the repository and describes *what* to build. The **policy** belongs to whoever owns the build platform and describes *what is allowed*: which builds may become releases, and which changes count as build-sensitive.
+The **manifest** (`build-onion.yml`) belongs to the repository and describes *what* to build. The **policy** belongs to whoever owns the build platform and describes *what is allowed*: which builds may become releases, which changes are recorded as build-configuration changes, and what blocks a build.
 
 ```yaml
 apiVersion: build-onion/policy/v1
@@ -12,14 +12,20 @@ release:
   refs: [refs/heads/main, refs/tags/v*]          # default
   events: [push, workflow_dispatch, release]     # default
 
-# Added to the built-in list: .github/**, the manifest, the lockfiles, the
-# Dockerfile, and this policy file.
+# Build-configuration files, recorded when they change. Always included:
+# .github/**, CODEOWNERS, the manifest, this policy, the lockfiles, the
+# Dockerfile, and the manifest's build.sensitive.
 sensitivePaths:
   - scripts/release/**
-  - Makefile
+# Named sets of common build-system files: autotools, bazel, cmake, docker,
+# go, gradle, make, maven, meson, node, python, rust.
+sensitivePresets: [make, python]
 
 # Refuse to build a manifest that doesn't declare build.inputs.
 requireBuildInputs: true
+# Refuse to build a change that adds or modifies a binary file (by content)
+# the build can read.
+blockOpaqueInputs: true
 ```
 
 With no policy file, the defaults above apply.
@@ -55,6 +61,10 @@ jobs:
 
 Then have repositories call `acme/platform/.github/workflows/secure-build.yml@<sha>`, and require that workflow with a repository ruleset. When verifying, pin the signer to your wrapper's build-onion ref with `onion peel --signer-ref`.
 
+## Repository settings
+
+build-onion reads what it needs with the workflow's read-only token. Monitor your repository's configuration (branch rules, token defaults, required reviews) separately, on a schedule and outside the build, with [OpenSSF Scorecard](https://github.com/ossf/scorecard-action) or [OpenSSF Allstar](https://github.com/ossf/allstar). Both are free.
+
 ## Where it's recorded
 
-The gate's verdict goes into the signed inventory: releasable or not and why, the diff base, the build-sensitive files changed, and the sha256 of the policy file. `onion peel` fails if the gate didn't allow a release, and shows sensitive changes as notes.
+The gate's verdict goes into the signed inventory: releasable or not and why, the diff base, the build-configuration files changed, binary files changed (and which of them the build can read), and the sha256 of the policy file. `onion peel` fails if the gate didn't allow a release, and shows the changes as notes.
