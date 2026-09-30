@@ -1,0 +1,9 @@
+apiVersion: build-onion/policy/v1
+
+# The gate refuses to build unless these protections are in place. They are
+# read with the workflow's read-only token.
+repository:
+  requirePullRequest: true
+  blockForcePush: true
+  requireCodeOwners: true
+  tagsFromDefaultBranch: true
