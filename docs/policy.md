@@ -28,7 +28,7 @@ requireBuildInputs: true
 blockOpaqueInputs: true
 ```
 
-With no policy file, the defaults above apply.
+Save it as `.build-onion/policy.yml` and both the build and security lines apply it, whether or not the workflows name it (the `policy` input points elsewhere). With no policy file, the defaults above apply.
 
 ## Signed release tags
 

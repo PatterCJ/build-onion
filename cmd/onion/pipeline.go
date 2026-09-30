@@ -97,7 +97,7 @@ func cmdGate(args []string) error {
 	var s sourceFlags
 	s.register(fs)
 	var p gate.Params
-	policyPath := fs.String("policy", "", "policy file (default: built-in policy)")
+	policyPath := fs.String("policy", "", "policy file (default: "+policy.DefaultPath+" in --source if present, else the built-in policy)")
 	snapPath := fs.String("snapshot", "", "source snapshot JSON (required)")
 	fs.StringVar(&p.Repository, "repository", "", "source repository URL")
 	fs.StringVar(&p.Base, "base", "", "previous build point to diff against")
@@ -119,16 +119,29 @@ func cmdGate(args []string) error {
 	if err != nil {
 		return err
 	}
-	pol, _, err := policy.Load(*policyPath)
+	// A policy file in the repository applies whether or not the workflow
+	// names it, so a caller can't drop it by leaving the input out.
+	polFile, polRel := *policyPath, *policyPath
+	if polFile == "" {
+		if _, err := os.Stat(filepath.Join(s.source, policy.DefaultPath)); err == nil {
+			polFile, polRel = filepath.Join(s.source, policy.DefaultPath), policy.DefaultPath
+		}
+	}
+	pol, _, err := policy.Load(polFile)
 	if err != nil {
 		return err
+	}
+	if polFile == "" {
+		fmt.Fprintln(os.Stderr, "gate: policy: built-in default (no "+policy.DefaultPath+")")
+	} else {
+		fmt.Fprintf(os.Stderr, "gate: policy: %s\n", polRel)
 	}
 	// The snapshot isn't evaluated by the gate, but the gate only runs
 	// against a checkout that still matches it.
 	if err := verifySource(s.source, *snapPath, "", nil); err != nil {
 		return err
 	}
-	p.SourceDir, p.ManifestPath, p.PolicyPath = s.source, s.manifest, *policyPath
+	p.SourceDir, p.ManifestPath, p.PolicyPath = s.source, s.manifest, polRel
 	if *rulesPath != "" {
 		if p.BranchRules, err = os.ReadFile(*rulesPath); err != nil {
 			return err
@@ -138,8 +151,8 @@ func cmdGate(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *policyPath != "" {
-		raw, err := os.ReadFile(*policyPath)
+	if polFile != "" {
+		raw, err := os.ReadFile(polFile)
 		if err != nil {
 			return err
 		}
@@ -172,6 +185,15 @@ func printGate(v *gate.Verdict) {
 	}
 	for _, f := range v.SensitiveChange {
 		fmt.Fprintf(w, "gate: build-sensitive change: %s\n", f)
+	}
+	if len(v.SensitiveChange) > 0 {
+		annotate("notice", "onion gate: build configuration changed", "Review these changes: "+strings.Join(v.SensitiveChange, ", "))
+	}
+	if len(v.OpaqueInputs) > 0 {
+		annotate("warning", "onion gate: binary change the build can read", strings.Join(v.OpaqueInputs, ", "))
+	}
+	if v.TagSigner != "" {
+		fmt.Fprintf(w, "gate: release tag signed by %s\n", v.TagSigner)
 	}
 }
 

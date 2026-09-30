@@ -42,7 +42,7 @@ on:
         type: string
         required: true
       policy:
-        description: Path to the build-onion policy file; must match what onion-build.yml was given.
+        description: Path to the build-onion policy file; must match what onion-build.yml was given. Defaults to .build-onion/policy.yml if the repo has one, else the built-in policy.
         type: string
         default: ""
       runs-on:

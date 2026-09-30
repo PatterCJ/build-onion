@@ -691,3 +691,35 @@ func TestTrustedBuilder(t *testing.T) {
 		t.Errorf("fork's trust entry accepted: %s", r.Verdict)
 	}
 }
+
+func TestTrustedAppSigner(t *testing.T) {
+	const maintainer = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFJ3KAvvJbVkYNEbTcSipRyJVpjRqqSJJrGLeG2862oF maintainer@example.com"
+	const other = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIiDD36cbKDIQdZ2Rk3Oa/1nXAEmPaUrbLF9ialifbHF someone-else@example.com"
+	trusted := &trust.File{
+		Builders: []trust.Builder{{Repository: "PatterCJ/build-onion", Releases: []trust.Release{{Tag: "v0.1.0", Commit: strings.Repeat("b", 40)}}}},
+		Apps:     []trust.App{{Repository: repo, TagSigners: []string{maintainer}}},
+	}
+	run := func(signer string, tf *trust.File) *Report {
+		w := newWorld()
+		w.inv.Gate.TagSigner = signer
+		in := w.input(t)
+		in.Trust = tf
+		return Run(in)
+	}
+	cases := []struct {
+		signer  string
+		tf      *trust.File
+		want    string
+		verdict Status
+	}{
+		{maintainer, trusted, "PASSED gate/release tag signer trusted: signed by SHA256:", Passed},
+		{other, trusted, "FINDING gate/release tag signer trusted: signed by SHA256:", Finding},
+		{"", trusted, "FINDING gate/release tag signer trusted: " + repo + " requires a tag signed by", Finding},
+		{maintainer, &trust.File{Builders: trusted.Builders}, "NOTE gate/release tag signer trusted: the trust file has no apps entry", Passed},
+	}
+	for _, c := range cases {
+		if r := run(c.signer, c.tf); r.Verdict != c.verdict || !strings.Contains(lines(r), c.want) {
+			t.Errorf("want %q (%s), got %s:\n%s", c.want, c.verdict, r.Verdict, lines(r))
+		}
+	}
+}

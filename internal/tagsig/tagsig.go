@@ -120,7 +120,11 @@ func verifySSHSIG(blob, message []byte, allowed []ssh.PublicKey) (ssh.PublicKey,
 		}
 	}
 	if match == nil {
-		return nil, fmt.Errorf("signed by %s, which is not an allowed signer", ssh.FingerprintSHA256(key))
+		var want []string
+		for _, a := range allowed {
+			want = append(want, ssh.FingerprintSHA256(a))
+		}
+		return nil, fmt.Errorf("signed by %s, which is not an allowed signer (allowed: %s)", ssh.FingerprintSHA256(key), strings.Join(want, ", "))
 	}
 	var h []byte
 	switch sig.HashAlg {

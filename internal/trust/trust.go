@@ -22,6 +22,16 @@ const APIVersion = "build-onion/trust/v1"
 type File struct {
 	APIVersion string    `yaml:"apiVersion"`
 	Builders   []Builder `yaml:"builders"`
+	// Apps pin who may sign release tags for the repositories being
+	// verified. A repository listed here must be released from a tag signed
+	// by one of its keys, whatever its own policy says.
+	Apps []App `yaml:"apps,omitempty"`
+}
+
+// App is one repository whose artifacts the verifier accepts.
+type App struct {
+	Repository string   `yaml:"repository"` // OWNER/REPO
+	TagSigners []string `yaml:"tagSigners"`
 }
 
 // Builder is one repository whose reusable workflows may seal artifacts.
@@ -83,7 +93,33 @@ func (f *File) Validate() error {
 			}
 		}
 	}
+	seenApp := map[string]bool{}
+	for _, a := range f.Apps {
+		if !repoRe.MatchString(a.Repository) {
+			errs = append(errs, fmt.Errorf("app repository %q must be OWNER/REPO", a.Repository))
+		}
+		if seenApp[strings.ToLower(a.Repository)] {
+			errs = append(errs, fmt.Errorf("app %s listed twice", a.Repository))
+		}
+		seenApp[strings.ToLower(a.Repository)] = true
+		if len(a.TagSigners) == 0 {
+			errs = append(errs, fmt.Errorf("app %s: tagSigners is empty", a.Repository))
+		}
+		if _, err := tagsig.Keys(a.TagSigners); err != nil {
+			errs = append(errs, fmt.Errorf("app %s: %w", a.Repository, err))
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// App returns the entry for a repository, matched case-insensitively.
+func (f *File) App(repo string) *App {
+	for i := range f.Apps {
+		if strings.EqualFold(f.Apps[i].Repository, repo) {
+			return &f.Apps[i]
+		}
+	}
+	return nil
 }
 
 // Builder returns the entry for a repository, matched case-insensitively.

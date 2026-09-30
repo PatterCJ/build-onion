@@ -235,6 +235,19 @@ onion peel "$IMAGE" --repo acme/widget --trust trust.yml
 
 An artifact sealed by any build-onion commit that isn't a listed release is a FINDING, whatever the workflow pinned. The signing certificate records the exact commit that sealed it, so a moved tag or a different pin can't hide it.
 
+### Pinning who releases each app
+
+The repository's own policy decides which keys may sign its tags, and the repository's writers can change it. To hold an app to keys you control, list it in the trust file:
+
+```yaml
+apps:
+  - repository: acme/widget
+    tagSigners:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA… widget release key
+```
+
+`peel --trust` then requires the artifact's release tag to have been signed by one of these keys. An artifact built from an unsigned tag, from a branch, or signed by another key is a FINDING. Repositories not listed are noted, not checked.
+
 ### Adding a release
 
 Run the `onion` you already trust:

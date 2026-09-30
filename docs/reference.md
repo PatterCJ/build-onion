@@ -86,7 +86,7 @@ All paths are relative to the repository root and may contain only letters, digi
 
 ## Policy file
 
-Optional. Pass its path to the build and verify workflows' `policy` input (both must get the same file). Without one, the defaults below apply. Unknown keys are an error. [Policy](policy.md) explains when to use each option.
+Optional. Put it at `.build-onion/policy.yml` and both lines use it automatically; the workflows' `policy` input names another path. Without a policy file, the defaults below apply. Unknown keys are an error. [Policy](policy.md) explains when to use each option.
 
 ```yaml
 apiVersion: build-onion/policy/v1
@@ -142,6 +142,10 @@ builders:
       - tag: v0.1.0
         commit: 0123456789abcdef0123456789abcdef01234567
         added: "2026-10-01"
+apps:
+  - repository: acme/widget
+    tagSigners:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA… widget release key
 ```
 
 | Field | Meaning |
@@ -150,6 +154,8 @@ builders:
 | `builders[].repository` | `OWNER/REPO` of the repository whose signing workflow seals artifacts. |
 | `builders[].tagSigners` | SSH public keys allowed to sign its release tags. `onion trust add` requires one. |
 | `builders[].releases` | Trusted releases: `tag`, the 40-hex `commit`, and the date it was `added`. An artifact is accepted only if the commit in its signing certificate is listed here. |
+| `apps[].repository` | Optional. `OWNER/REPO` of a repository whose artifacts this verifier checks. |
+| `apps[].tagSigners` | SSH public keys allowed to sign that repository's release tags. An artifact from a listed repository must have been released from a tag signed by one of them, whatever the repository's own policy allows. A repository not listed is noted, not checked. |
 
 ## Reusable workflows
 
@@ -204,7 +210,7 @@ Caller permissions: `contents: read`, `id-token: write` (read only for the workf
 | Input | Default | Meaning |
 |---|---|---|
 | `manifest` | `build-onion.yml` | Manifest path, relative to the repository root. |
-| `policy` | *(built-in)* | Policy file path. |
+| `policy` | `.build-onion/policy.yml` if present, else built-in | Policy file path. |
 
 | Output | Meaning |
 |---|---|
@@ -223,7 +229,7 @@ Caller permissions: `contents: read`, `id-token: write`, `attestations: write`. 
 | `snapshot` | *(required)* | The build line's `snapshot` output. |
 | `releasable` | *(required)* | The build line's `releasable` output. The seal job re-runs the gate itself and refuses to sign if it disagrees. |
 | `manifest` | `build-onion.yml` | Manifest path. |
-| `policy` | *(built-in)* | Policy file path; must be the file the build line was given. |
+| `policy` | `.build-onion/policy.yml` if present, else built-in | Policy file path; must be the file the build line was given. |
 | `runs-on` | `ubuntu-24.04` | Runner for the independent rebuild. Point it at separate infrastructure where you have it. |
 
 | Output | Meaning |
@@ -259,7 +265,7 @@ Build it from the build-onion commit you use:
 CGO_ENABLED=0 go build -trimpath -o onion ./cmd/onion
 ```
 
-Or run it from the published image: `docker run --rm ghcr.io/pattercj/build-onion:<tag> peel …`. `GITHUB_TOKEN`, when set, authenticates GitHub API requests; the unauthenticated limit is 60 an hour.
+Or run it from the published image: `docker run --rm ghcr.io/pattercj/build-onion:<tag> peel …`. On GitHub Actions, every block, finding and coverage gap is also raised as an annotation on the run's summary page. `GITHUB_TOKEN`, when set, authenticates GitHub API requests; the unauthenticated limit is 60 an hour.
 
 Commands you run yourself: [`peel`](#onion-peel), [`trust add`](#onion-trust-add), [`validate`](#onion-validate), [`upstream`](#onion-upstream), [`record scan`](#onion-record), [`digest`](#onion-digest). The rest are the steps the reusable workflows run, and can drive the same pipeline from another CI system.
 

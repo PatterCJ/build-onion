@@ -25,7 +25,7 @@ on:
         type: string
         default: build-onion.yml
       policy:
-        description: Path to a build-onion policy file in the repo (default built-in policy).
+        description: Path to a build-onion policy file in the repo. Defaults to .build-onion/policy.yml if the repo has one, else the built-in policy.
         type: string
         default: ""
     outputs:
