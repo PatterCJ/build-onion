@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/PatterCJ/build-onion/internal/tagsig"
 )
 
 const APIVersion = "build-onion/policy/v1"
@@ -71,6 +73,10 @@ func (r Repository) NeedsRules() bool {
 type Release struct {
 	Refs   []string `yaml:"refs" json:"refs"`
 	Events []string `yaml:"events" json:"events"`
+	// TagSigners, when set, are the only keys (authorized_keys form) whose
+	// signed tags may release: an unsigned tag, or one signed by any other
+	// key, is blocked.
+	TagSigners []string `yaml:"tagSigners" json:"tagSigners,omitempty"`
 }
 
 // Default applies when no policy file is given.
@@ -131,6 +137,9 @@ func (p *Policy) Validate() error {
 		if forbiddenEvents[e] {
 			errs = append(errs, fmt.Errorf("release.events: %s can never produce a release", e))
 		}
+	}
+	if _, err := tagsig.Keys(p.Release.TagSigners); err != nil {
+		errs = append(errs, fmt.Errorf("release.tagSigners: %w", err))
 	}
 	for _, r := range p.Release.Refs {
 		if !strings.HasPrefix(r, "refs/") {

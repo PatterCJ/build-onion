@@ -28,6 +28,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/trust"
 	"github.com/PatterCJ/build-onion/internal/upstream"
 	"github.com/PatterCJ/build-onion/internal/verify"
 )
@@ -147,6 +148,9 @@ type Input struct {
 	// against the provenance, whose ref comes from GitHub's signing identity,
 	// independent of any policy the repository itself declares.
 	Refs []string
+	// Trust, if set, lists the build-onion releases allowed to have sealed
+	// the artifact.
+	Trust *trust.File
 }
 
 // Run peels every layer and returns the graded report. It never stops early:
@@ -206,6 +210,32 @@ func Run(in Input) *Report {
 	if len(runs) > 0 {
 		r.check("seal", "one run signed every layer", allEqual(runs), Finding, "run %s", strings.Join(uniq(runs), ", "))
 	}
+	// The builder commit comes from the certificate: the exact commit of the
+	// signing workflow, however the caller referenced it.
+	var builders []string
+	for _, pt := range sortedKeys(verified) {
+		builders = append(builders, verified[pt].Certificate.BuildSignerDigest)
+	}
+	builders = uniq(builders)
+	builderCommit := ""
+	if len(builders) > 0 {
+		if r.check("seal", "one builder commit signed every layer", len(builders) == 1 && builders[0] != "", Finding,
+			"build-onion %s", strings.Join(builders, ", ")) {
+			builderCommit = builders[0]
+		}
+		signerRepo := signerRepository(in.Signer.SignerWorkflow)
+		switch {
+		case in.Trust == nil:
+			r.NotPerformed = append(r.NotPerformed, "trusted builder release (pass --trust <file>)")
+		case builderCommit != "":
+			rel, ok := in.Trust.Trusted(signerRepo, builderCommit)
+			detail := fmt.Sprintf("%s %s is not a release in the trust file", signerRepo, builderCommit)
+			if ok {
+				detail = fmt.Sprintf("%s %s (%s)", signerRepo, rel.Tag, builderCommit)
+			}
+			r.check("seal", "builder is a trusted release", ok, Finding, "%s", detail)
+		}
+	}
 
 	// provenance: SLSA v1 from GitHub, signed by the security line.
 	var prov provenance
@@ -261,6 +291,10 @@ func Run(in Input) *Report {
 		checkEgress(r, &inv)
 		checkVerification(r, &inv, in.Digest)
 		checkPipeline(r, &inv)
+		if builderCommit != "" && inv.Pipeline.BuildOnion.Commit != "" {
+			r.check("pipeline", "recorded builder is the signer", inv.Pipeline.BuildOnion.Commit == builderCommit, Finding,
+				"inventory build-onion %s, certificate %s", inv.Pipeline.BuildOnion.Commit, builderCommit)
+		}
 		checkScans(r, &inv)
 	}
 
@@ -335,6 +369,9 @@ func checkGate(r *Report, inv *inventory.Inventory) {
 		return
 	}
 	r.check("gate", "release allowed", g.Releasable && !g.Blocked, Finding, "%s", g.Reason)
+	if g.TagSigner != "" {
+		r.grade("gate", "release tag signed", Passed, "by %s", g.TagSigner)
+	}
 	if len(g.SensitiveChange) > 0 {
 		r.grade("gate", "build-sensitive change", Note, "this commit changed %s", strings.Join(g.SensitiveChange, ", "))
 	}
@@ -684,6 +721,15 @@ func declaredFrom(inv *inventory.Inventory) ([]lockfile.Package, []lockfile.Loca
 		local = append(local, lockfile.Local{Ecosystem: "golang", Name: m})
 	}
 	return declared, local
+}
+
+// signerRepository is OWNER/REPO of OWNER/REPO/.github/workflows/file.yml.
+func signerRepository(workflow string) string {
+	parts := strings.SplitN(workflow, "/", 3)
+	if len(parts) < 2 {
+		return workflow
+	}
+	return parts[0] + "/" + parts[1]
 }
 
 func refMatches(patterns []string, ref string) bool {

@@ -30,6 +30,19 @@ blockOpaqueInputs: true
 
 With no policy file, the defaults above apply.
 
+## Signed release tags
+
+```yaml
+release:
+  refs: [refs/tags/v*]
+  tagSigners:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA… release key
+```
+
+With `tagSigners`, a tag release builds only if its tag is signed by one of these keys (`git tag -s` with `gpg.format=ssh`) and points at the commit being built. An unsigned tag, or one signed by any other key, is blocked, so a stolen token can push a tag but can't release it. Keep the signing key off CI, ideally on a hardware key (`ssh-keygen -t ed25519-sk`). The signer is recorded in the inventory and shown by `peel`.
+
+A policy file in the repository can be changed by a merged pull request, so for the strongest guarantee keep `tagSigners` in a policy your platform team controls (see below), or check tag signatures in the deploy gate's trust file ([Adopting](adopting.md#6-trust-build-onion-releases-not-commits)).
+
 ## Refused outright
 
 `pull_request_target` and `workflow_run` run with the target repository's privileges and are the usual way fork code reaches release credentials. build-onion refuses to run under them at all, and a policy can't list them as release events.

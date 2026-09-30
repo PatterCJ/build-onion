@@ -26,6 +26,7 @@ When `onion peel` passes, every statement below was checked:
 - The build ran in a builder image pinned by digest, with no network; every workflow action was pinned to a commit, and the runner images and tool versions were recorded.
 - A second build on separate runners produced the same bytes before it was signed.
 - The release rules allowed it, and every recorded scan examined these exact bytes.
+- *With `--trust`:* it was sealed by a build-onion release on your own trust list, one whose tag was signed by a key you listed and which your previously trusted `onion` verified.
 
 ## How it works
 
@@ -96,6 +97,7 @@ $ onion peel ghcr.io/acme/widget@sha256:… --repo acme/widget --ref 'refs/heads
 | `--ref REFS` | Require the source ref to match one of these globs. |
 | `--source DIR` | Also check a local checkout against the signed snapshot. |
 | `--rebuild` | Also rebuild locally from `--source` and compare (needs Docker). |
+| `--trust FILE` | Accept only artifacts sealed by a build-onion release on this list (see [Adopting](docs/adopting.md#6-trust-build-onion-releases-not-commits)). |
 | `--baseline ARTIFACT` | Also verify a previous release and report what changed since it. |
 | `--packages` | List every package found in the artifact, its outcome, and its upstream outcome. |
 | `--bundles DIR` | Verify offline from saved bundles instead of the GitHub attestations API. |
@@ -108,7 +110,7 @@ Set `GITHUB_TOKEN` when verifying often: unauthenticated GitHub API requests are
 
 | Section | What's checked |
 |---|---|
-| **seal** | Every bundle's signature, the signer, the repository and commit in the certificate, and that one run signed provenance, SBOM and inventory. |
+| **seal** | Every bundle's signature, the signer, the repository and commit in the certificate, that one run and one build-onion commit signed provenance, SBOM and inventory, and with `--trust` that the commit is a trusted release. |
 | **provenance** | The builder, a hosted runner, the source repository and commit, and with `--ref` the source ref. |
 | **inventory** | Same commit and run as the provenance, the artifact is a declared output, the builder is pinned, the build had no network, and which files the build could read. |
 | **gate** | The release rules allowed it; build-configuration and binary changes are listed as notes. |
@@ -145,7 +147,7 @@ NOTE lines give context without affecting the verdict.
 
 ## The `onion` CLI
 
-The CLI takes everything as flags and has no dependency on GitHub; the reusable workflows supply events, refs and Sigstore signing. Its commands (`validate`, `source`, `gate`, `fetch`, `build`, `compare`, `upstream`, `record`, `inventory`, `peel`) can be driven from any CI system.
+The CLI takes everything as flags and has no dependency on GitHub; the reusable workflows supply events, refs and Sigstore signing. Its commands (`validate`, `source`, `gate`, `fetch`, `build`, `compare`, `upstream`, `record`, `inventory`, `peel`, `trust`) can be driven from any CI system.
 
 ## Development
 
