@@ -141,6 +141,7 @@ NOTE lines give context without affecting the verdict.
 - [Adopting](docs/adopting.md): the manifest, wiring the three lines, reproducible builds.
 - [Scan records](docs/scans.md): recording the tools your pipeline already runs.
 - [Policy](docs/policy.md): release rules, build-configuration files, and org-wide enforcement.
+- [Reference](docs/reference.md): every manifest, policy and workflow option, and every CLI command and flag.
 
 ## The `onion` CLI
 

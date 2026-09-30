@@ -1,5 +1,7 @@
 # Adopting build-onion
 
+Every option mentioned here is listed in the [reference](reference.md).
+
 ## 1. Write the manifest
 
 The manifest is the whole contract. Anything not declared is not available to the build.
@@ -14,7 +16,7 @@ The manifest is the whole contract. Anything not declared is not available to th
 | `build.run` / `env` | Runs with `--network none`, as your UID, with `HOME=/tmp`. `env` applies to this step only, not to `fetch`. |
 | `build.inputs` | Globs (`**` spans directories) naming the files fetch and build may read, for example `[src/**, cmd/**/*.go, go.mod]`. The manifest, lockfiles and Dockerfile are always included. Nothing else is staged: tests, fixtures, docs and untracked files don't exist for the build. A pattern that matches nothing fails the build. Without it, the build sees every tracked file and `peel` notes it. |
 | `build.sensitive` | Globs naming your build scripts and build configuration (`Makefile`, `scripts/**`, `*.m4`, `build.rs`). Changes to them are recorded by the gate and shown by `peel`. Each pattern must match a tracked file. |
-| `build.scratch` | Other paths `fetch` or `build` may create in the tree (`node_modules`, `build/`). Any other new file fails the build. |
+| `build.scratch` | Other paths `fetch` or `build` may create in the tree (`node_modules`, `build`). Any other new file fails the build. |
 | `outputs.files` | Must not exist in the source; they must be produced by the build. |
 | `outputs.image` | Built from the Dockerfile with `RUN` steps networkless, as a single-platform reproducible OCI image. Every `FROM` must be pinned. |
 
