@@ -4,6 +4,7 @@ Every option build-onion reads, in one place:
 
 - [`build-onion.yml`](#build-onionyml): the manifest
 - [Policy file](#policy-file)
+- [Trust file](#trust-file): the build-onion releases a verifier accepts
 - [Reusable workflows](#reusable-workflows): inputs, outputs, permissions
 - [`onion` CLI](#onion-cli): every command and flag
 
@@ -113,6 +114,7 @@ repository:
 | `apiVersion` | | `build-onion/policy/v1`. |
 | `release.refs` | `refs/heads/main`, `refs/tags/v*` | Refs (globs) whose builds may be sealed. Everything else builds and is checked, but isn't signed or published. |
 | `release.events` | `push`, `workflow_dispatch`, `release` | Events whose builds may be sealed. `pull_request_target` and `workflow_run` are always refused. |
+| `release.tagSigners` | | SSH public keys (authorized_keys form). When set, a tag release builds only if its tag is signed by one of them and points at the commit being built. |
 | `sensitivePaths` | | Globs added to the build-configuration files the gate records changes to. Always included: `.github/**`, `CODEOWNERS`, the manifest, the policy, the lockfiles, the Dockerfile, and `build.sensitive`. |
 | `sensitivePresets` | | Named sets of build-system files: `autotools`, `bazel`, `cmake`, `docker`, `go`, `gradle`, `make`, `maven`, `meson`, `node`, `python`, `rust`. |
 | `requireBuildInputs` | `false` | Refuse to build a manifest without `build.inputs`. |
@@ -125,6 +127,29 @@ repository:
 | `repository.tagsFromDefaultBranch` | `false` | A tag release must point at a commit on the default branch. |
 
 Branch requirements are read from rulesets with the workflow's read-only token; for a tag release or a pull request build, the default branch's rules are checked.
+
+## Trust file
+
+Held by whoever runs `onion peel` as a gate, not by the repositories it verifies. Passed with `peel --trust`, and updated with `onion trust add`.
+
+```yaml
+apiVersion: build-onion/trust/v1
+builders:
+  - repository: PatterCJ/build-onion
+    tagSigners:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA… build-onion release key
+    releases:
+      - tag: v0.1.0
+        commit: 0123456789abcdef0123456789abcdef01234567
+        added: "2026-10-01"
+```
+
+| Field | Meaning |
+|---|---|
+| `apiVersion` | `build-onion/trust/v1`. |
+| `builders[].repository` | `OWNER/REPO` of the repository whose signing workflow seals artifacts. |
+| `builders[].tagSigners` | SSH public keys allowed to sign its release tags. `onion trust add` requires one. |
+| `builders[].releases` | Trusted releases: `tag`, the 40-hex `commit`, and the date it was `added`. An artifact is accepted only if the commit in its signing certificate is listed here. |
 
 ## Reusable workflows
 
@@ -236,7 +261,7 @@ CGO_ENABLED=0 go build -trimpath -o onion ./cmd/onion
 
 Or run it from the published image: `docker run --rm ghcr.io/pattercj/build-onion:<tag> peel …`. `GITHUB_TOKEN`, when set, authenticates GitHub API requests; the unauthenticated limit is 60 an hour.
 
-Commands you run yourself: [`peel`](#onion-peel), [`validate`](#onion-validate), [`upstream`](#onion-upstream), [`record scan`](#onion-record), [`digest`](#onion-digest). The rest are the steps the reusable workflows run, and can drive the same pipeline from another CI system.
+Commands you run yourself: [`peel`](#onion-peel), [`trust add`](#onion-trust-add), [`validate`](#onion-validate), [`upstream`](#onion-upstream), [`record scan`](#onion-record), [`digest`](#onion-digest). The rest are the steps the reusable workflows run, and can drive the same pipeline from another CI system.
 
 ### Flags most commands share
 
@@ -260,6 +285,7 @@ onion peel ARTIFACT --repo OWNER/REPO [flags]
 | `--repo OWNER/REPO` | *(required)* | Repository the artifact claims to come from. |
 | `--commit SHA` | | Require this source commit. |
 | `--ref REFS` | | Comma-separated ref globs the artifact must be built from, e.g. `refs/heads/main,refs/tags/v*`. |
+| `--trust FILE` | | Accept only artifacts sealed by a build-onion release listed in this [trust file](#trust-file). |
 | `--baseline ARTIFACT` | | Also verify a previous release and report what changed since it. |
 | `--accept-signer-changes` | `false` | With `--baseline`: report lost provenance and signer changes as notes. |
 | `--source DIR` | | Also check this checkout against the signed source snapshot. |
@@ -275,6 +301,26 @@ onion peel ARTIFACT --repo OWNER/REPO [flags]
 | `--trusted-root FILE` | *(Sigstore public-good via TUF)* | Sigstore `trusted_root.json`, for offline or private-instance verification. |
 
 Exit codes: 0 passed, 3 degraded or unsupported, 4 finding, 5 failed.
+
+### `onion trust add`
+
+Vet a new build-onion release with the `onion` you already trust, then add it to a trust file.
+
+```sh
+onion trust add --trust FILE --tag TAG [--repo OWNER/REPO]
+```
+
+It fetches the tag with `git` and requires a signature from one of the builder's `tagSigners`. It then downloads the release's sealed binary and peels it (`--ref refs/tags/TAG`, commit from the tag), using this binary's code. Only if that passes does it append the release.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--trust FILE` | *(required)* | Trust file to update. |
+| `--tag TAG` | *(required)* | Release tag, e.g. `v0.2.0`. |
+| `--repo OWNER/REPO` | `PatterCJ/build-onion` | Builder repository. |
+| `--asset NAME` | `onion` | Release asset to peel. |
+| `--signer-path PATH` | `.github/workflows/onion-verify.yml` | The builder's signing workflow. |
+| `--allow-degraded` | `false` | Accept a DEGRADED or UNSUPPORTED peel verdict. |
+| `--trusted-root FILE` | *(Sigstore public-good)* | Sigstore `trusted_root.json`. |
 
 ### `onion validate`
 

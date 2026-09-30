@@ -372,3 +372,47 @@ func TestTagsFromDefaultBranch(t *testing.T) {
 		t.Fatalf("branch push blocked by the tag rule: %v", v.BlockedBy)
 	}
 }
+
+func TestSignedReleaseTags(t *testing.T) {
+	if _, err := exec.LookPath("ssh-keygen"); err != nil {
+		t.Skip("ssh-keygen not installed")
+	}
+	f := setup(t)
+	keyDir := t.TempDir()
+	newKey := func(name string) (string, string) {
+		p := filepath.Join(keyDir, name)
+		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", p).CombinedOutput(); err != nil {
+			t.Fatalf("ssh-keygen: %v %s", err, out)
+		}
+		pub, _ := os.ReadFile(p + ".pub")
+		return p, strings.TrimSpace(string(pub))
+	}
+	maintainer, maintainerPub := newKey("maintainer")
+	other, _ := newKey("other")
+	tag := func(name, key string, args ...string) {
+		f.git(t, append([]string{"-c", "gpg.format=ssh", "-c", "user.signingkey=" + key, "tag", "-s", name, "-m", name}, args...)...)
+	}
+	tag("v2.0.0", maintainer)
+	tag("v2.0.1", other)
+	f.git(t, "tag", "-a", "v2.0.2", "-m", "unsigned")
+	tag("v2.0.3", maintainer, f.base) // signed, but for an older commit
+
+	pol := policy.Default()
+	pol.Release.TagSigners = []string{maintainerPub}
+	if v := f.evalRepo(t, "refs/tags/v2.0.0", "", pol); v.Blocked || !strings.HasPrefix(v.TagSigner, "ssh-ed25519 ") {
+		t.Fatalf("signed tag blocked: %v", v.BlockedBy)
+	}
+	for ref, want := range map[string]string{
+		"refs/tags/v2.0.1": "not an allowed signer",
+		"refs/tags/v2.0.2": "not signed with an SSH key",
+		"refs/tags/v2.0.3": "but this build is",
+		"refs/tags/v9.9.9": "not an annotated tag",
+	} {
+		if v := f.evalRepo(t, ref, "", pol); !v.Blocked || !strings.Contains(strings.Join(v.BlockedBy, ";"), want) {
+			t.Errorf("%s: blocked=%v %v, want %q", ref, v.Blocked, v.BlockedBy, want)
+		}
+	}
+	if v := f.evalRepo(t, "refs/heads/main", "", pol); v.Blocked {
+		t.Errorf("branch push blocked by tag signing: %v", v.BlockedBy)
+	}
+}

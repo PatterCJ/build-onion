@@ -211,3 +211,53 @@ Signers are compared per package across versions, so a new release of a dependen
 ```sh
 onion peel "$IMAGE" --repo acme/widget --baseline ghcr.io/acme/widget:v1.4.0
 ``` Set `GITHUB_TOKEN` in the environment to avoid the GitHub API's 60-requests-per-hour unauthenticated limit, or pass `--bundles` to verify offline.
+
+## 6. Trust build-onion releases, not commits
+
+A workflow pin can point at any commit of build-onion, and anyone who can edit your workflow can change it. So the deploy gate, not the repository, decides which build-onion releases may seal what it deploys. Keep a trust file wherever the gate's configuration lives, owned by whoever owns the gate:
+
+```yaml
+# trust.yml
+apiVersion: build-onion/trust/v1
+builders:
+  - repository: PatterCJ/build-onion
+    # Keys allowed to sign build-onion release tags.
+    tagSigners:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA… build-onion release key
+    releases: []   # filled by `onion trust add`
+```
+
+Then verify with it:
+
+```sh
+onion peel "$IMAGE" --repo acme/widget --trust trust.yml
+```
+
+An artifact sealed by any build-onion commit that isn't a listed release is a FINDING, whatever the workflow pinned. The signing certificate records the exact commit that sealed it, so a moved tag or a different pin can't hide it.
+
+### Adding a release
+
+Run the `onion` you already trust:
+
+```sh
+onion trust add --trust trust.yml --tag v0.2.0
+```
+
+It adds the release only if:
+
+1. the tag is signed by one of `tagSigners`, and
+2. the release's sealed `onion` binary peels with your current `onion`, built from that tag's commit.
+
+The new release's own code never judges itself. Pin your workflows to the commit it prints.
+
+### The first release
+
+With no trusted `onion` yet, check the first release independently before adding it: build `onion` from the tag after checking its signature (`git verify-tag`), and check the release binary with GitHub's verifier:
+
+```sh
+gh attestation verify onion --repo PatterCJ/build-onion \
+  --signer-workflow PatterCJ/build-onion/.github/workflows/onion-verify.yml
+```
+
+Then run `onion trust add` with the binary you built.
+

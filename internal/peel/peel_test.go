@@ -21,6 +21,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/trust"
 	"github.com/PatterCJ/build-onion/internal/upstream"
 	"github.com/PatterCJ/build-onion/internal/verify"
 )
@@ -124,6 +125,7 @@ func newWorld() *world {
 				SourceRepositoryURI:    repoURL,
 				SourceRepositoryDigest: commit,
 				RunInvocationURI:       runURL,
+				BuildSignerDigest:      strings.Repeat("b", 40),
 			},
 		},
 	}
@@ -178,7 +180,7 @@ func TestPeelHappyPath(t *testing.T) {
 	if r.Verdict != Passed || r.ExitCode(false) != 0 {
 		t.Fatalf("verdict %s, graded: %v", r.Verdict, graded(r))
 	}
-	if len(r.NotPerformed) != 2 {
+	if len(r.NotPerformed) != 3 {
 		t.Errorf("not performed = %v", r.NotPerformed)
 	}
 }
@@ -651,5 +653,41 @@ func TestPeelUpstream(t *testing.T) {
 	w.inv.Upstream.Results = nil
 	if r := Run(w.input(t)); r.Verdict != Failed {
 		t.Errorf("record missing a package: %s\n%s", r.Verdict, lines(r))
+	}
+}
+
+func TestTrustedBuilder(t *testing.T) {
+	trusted := &trust.File{APIVersion: trust.APIVersion, Builders: []trust.Builder{{
+		Repository: "PatterCJ/build-onion",
+		Releases:   []trust.Release{{Tag: "v0.1.0", Commit: strings.Repeat("b", 40)}},
+	}}}
+	w := newWorld()
+	in := w.input(t)
+	in.Trust = trusted
+	if r := Run(in); r.Verdict != Passed || !strings.Contains(lines(r), "PASSED seal/builder is a trusted release: PatterCJ/build-onion v0.1.0") {
+		t.Fatalf("trusted builder:\n%s", lines(r))
+	}
+
+	// Sealed by a build-onion commit that isn't a trusted release.
+	w = newWorld()
+	w.cert.BuildSignerDigest = strings.Repeat("c", 40)
+	in = w.input(t)
+	in.Trust = trusted
+	r := Run(in)
+	for _, want := range []string{
+		"FINDING seal/builder is a trusted release: PatterCJ/build-onion " + strings.Repeat("c", 40) + " is not a release",
+		"FINDING pipeline/recorded builder is the signer",
+	} {
+		if !strings.Contains(lines(r), want) {
+			t.Errorf("missing %q:\n%s", want, lines(r))
+		}
+	}
+
+	// A trust file for another builder repository doesn't vouch for this one.
+	w = newWorld()
+	in = w.input(t)
+	in.Trust = &trust.File{Builders: []trust.Builder{{Repository: "someone/fork", Releases: trusted.Builders[0].Releases}}}
+	if r := Run(in); r.Verdict != Finding {
+		t.Errorf("fork's trust entry accepted: %s", r.Verdict)
 	}
 }

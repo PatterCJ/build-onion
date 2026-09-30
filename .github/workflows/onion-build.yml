@@ -193,6 +193,18 @@ jobs:
         with:
           name: onion-snapshot
           path: /tmp/onion-snap
+      - name: Fetch the release tag object
+        # actions/checkout stores tags as lightweight; the gate needs the
+        # annotated tag to check who signed it.
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          export GIT_CONFIG_VALUE_0
+          git fetch -q --no-tags --force origin "+$GITHUB_REF:$GITHUB_REF"
+          echo "$GITHUB_REF is a $(git cat-file -t "$GITHUB_REF") object"
       - name: Read branch rules (read-only token)
         # Only the policy's repository requirements use these. A failed read
         # leaves no file, which fails the gate only if they're required.

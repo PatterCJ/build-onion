@@ -18,6 +18,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/policy"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/tagsig"
 )
 
 // Params are the facts the CI platform knows about this run.
@@ -64,7 +65,10 @@ type Verdict struct {
 	// Repository is the result of the policy's repository requirements.
 	Repository   *RepoCheck `json:"repository,omitempty"`
 	PolicyDigest string     `json:"policyDigest,omitempty"`
-	Context      Context    `json:"context"`
+	// TagSigner is the allowed key that signed the release tag, when the
+	// policy requires signed tags.
+	TagSigner string  `json:"tagSigner,omitempty"`
+	Context   Context `json:"context"`
 }
 
 // Evaluate runs the gate.
@@ -85,6 +89,15 @@ func Evaluate(p Params, pol *policy.Policy, m *manifest.Manifest) (*Verdict, err
 	v.Releasable, v.Reason = pol.Releasable(p.Context.Event, p.Context.Ref)
 	if v.Releasable && p.Fork {
 		v.Releasable, v.Reason = false, "commit comes from a fork"
+	}
+
+	if ref, ok := strings.CutPrefix(p.Context.Ref, "refs/tags/"); ok && len(pol.Release.TagSigners) > 0 {
+		signer, err := checkTagSignature(p.SourceDir, ref, pol.Release.TagSigners)
+		if err != nil {
+			v.Blocked = true
+			v.BlockedBy = append(v.BlockedBy, fmt.Sprintf("release tag %s: %v", ref, err))
+		}
+		v.TagSigner = signer
 	}
 
 	changed, known, err := changedFiles(p.SourceDir, p.Base)
@@ -205,4 +218,29 @@ func changedFiles(dir, base string) ([]string, bool, error) {
 	}
 	sort.Strings(files)
 	return files, true, nil
+}
+
+// checkTagSignature requires the release tag to be signed by an allowed key
+// and to point at the commit being built.
+func checkTagSignature(dir, tag string, signers []string) (string, error) {
+	raw, err := exec.Command("git", "-C", dir, "cat-file", "tag", "refs/tags/"+tag).Output()
+	if err != nil {
+		return "", errors.New("not an annotated tag in this checkout; release tags must be signed (git tag -s)")
+	}
+	keys, err := tagsig.Keys(signers)
+	if err != nil {
+		return "", err
+	}
+	t, err := tagsig.Verify(raw, keys)
+	if err != nil {
+		return "", err
+	}
+	head, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", err
+	}
+	if t.Name != tag || t.Object != strings.TrimSpace(string(head)) {
+		return "", fmt.Errorf("signed tag names %s at %s, but this build is %s at %s", t.Name, t.Object, tag, strings.TrimSpace(string(head)))
+	}
+	return t.Key, nil
 }

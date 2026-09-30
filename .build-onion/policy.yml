@@ -1,5 +1,11 @@
 apiVersion: build-onion/policy/v1
 
+# A tag releases only if it is signed by one of these keys and points at the
+# commit being built.
+release:
+  tagSigners:
+    - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJkCMZITdqwz1HgiMqqI8TkJmT0MAnE723Nl24woUkCl build-onion release key
+
 # The gate refuses to build unless these protections are in place. They are
 # read with the workflow's read-only token.
 repository:

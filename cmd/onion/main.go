@@ -32,6 +32,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/peel"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/trust"
 	"github.com/PatterCJ/build-onion/internal/upstream"
 	"github.com/PatterCJ/build-onion/internal/verify"
 )
@@ -56,7 +57,8 @@ Usage:
   onion upstream  [--source DIR] [--manifest FILE] [--snapshot FILE] [--out FILE] [-v]
   onion digest    [--oci] PATH...
   onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
-  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--baseline ARTIFACT] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
+  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--baseline ARTIFACT] [--trust FILE] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
+  onion trust     add --trust FILE --tag TAG [--repo OWNER/REPO]
   onion version
 `
 
@@ -72,6 +74,7 @@ func main() {
 		"record":    cmdRecord,
 		"compare":   cmdCompare,
 		"upstream":  cmdUpstream,
+		"trust":     cmdTrust,
 		"proxy":     cmdProxy,
 		"fetch":     cmdFetch,
 		"build":     cmdBuild,
@@ -401,6 +404,7 @@ func cmdPeel(args []string) error {
 	refs := fs.String("ref", "", "comma-separated refs the artifact must have been built from, e.g. 'refs/heads/main,refs/tags/v*'")
 	oci := fs.Bool("oci", false, "ARTIFACT is an OCI image-layout tarball; verify its image digest")
 	baseline := fs.String("baseline", "", "a previously sealed artifact (usually the last release) to compare with")
+	trustPath := fs.String("trust", "", "trust file listing the build-onion releases allowed to have sealed the artifact")
 	baselineBundles := fs.String("baseline-bundles", "", "directory of the baseline's Sigstore bundles (default: GitHub attestations API)")
 	acceptSignerChanges := fs.Bool("accept-signer-changes", false, "with --baseline: report dependencies that lost provenance or changed signer as notes, not findings")
 	artifact, rest := splitPositional(args)
@@ -430,6 +434,12 @@ func cmdPeel(args []string) error {
 	if err != nil {
 		return err
 	}
+	var trusted *trust.File
+	if *trustPath != "" {
+		if trusted, err = trust.Load(*trustPath); err != nil {
+			return err
+		}
+	}
 	candidates := func(dir, d string) ([]attest.Candidate, error) {
 		if dir != "" {
 			return attest.FromDir(dir)
@@ -450,6 +460,7 @@ func cmdPeel(args []string) error {
 		SourceDir:  *source,
 		Rebuild:    *rebuild,
 		Refs:       splitList(*refs),
+		Trust:      trusted,
 	}
 	rep := peel.Run(in)
 	if *baseline != "" {
