@@ -34,6 +34,36 @@ type Policy struct {
 	// BlockOpaqueInputs refuses to build a change that adds or modifies a
 	// binary file the build can read.
 	BlockOpaqueInputs bool `yaml:"blockOpaqueInputs" json:"blockOpaqueInputs,omitempty"`
+	// Repository lists protections the repository must have before a build
+	// is allowed. All are read without admin rights.
+	Repository Repository `yaml:"repository" json:"repository,omitempty"`
+}
+
+// Repository requirements, checked by the gate.
+type Repository struct {
+	// The release branch's active rules (rulesets) must require pull
+	// requests, at least MinApprovals approvals, code-owner review, and
+	// block force pushes, as set.
+	RequirePullRequest     bool `yaml:"requirePullRequest" json:"requirePullRequest,omitempty"`
+	MinApprovals           int  `yaml:"minApprovals" json:"minApprovals,omitempty"`
+	RequireCodeOwnerReview bool `yaml:"requireCodeOwnerReview" json:"requireCodeOwnerReview,omitempty"`
+	BlockForcePush         bool `yaml:"blockForcePush" json:"blockForcePush,omitempty"`
+	// RequireCodeOwners: CODEOWNERS must name an owner for every
+	// build-configuration file.
+	RequireCodeOwners bool `yaml:"requireCodeOwners" json:"requireCodeOwners,omitempty"`
+	// TagsFromDefaultBranch: a tag release must point at a commit already on
+	// the default branch.
+	TagsFromDefaultBranch bool `yaml:"tagsFromDefaultBranch" json:"tagsFromDefaultBranch,omitempty"`
+}
+
+// Any reports whether any requirement is set.
+func (r Repository) Any() bool {
+	return r.NeedsRules() || r.RequireCodeOwners || r.TagsFromDefaultBranch
+}
+
+// NeedsRules reports whether the branch's rules must be read.
+func (r Repository) NeedsRules() bool {
+	return r.RequirePullRequest || r.MinApprovals > 0 || r.RequireCodeOwnerReview || r.BlockForcePush
 }
 
 // Release says when a build may be sealed. Anything else still builds and is
@@ -86,6 +116,9 @@ var forbiddenEvents = map[string]bool{"pull_request_target": true, "workflow_run
 
 func (p *Policy) Validate() error {
 	var errs []error
+	if p.Repository.MinApprovals < 0 {
+		errs = append(errs, errors.New("repository.minApprovals can't be negative"))
+	}
 	for _, name := range p.SensitivePresets {
 		if _, ok := presets[name]; !ok {
 			errs = append(errs, fmt.Errorf("sensitivePresets: unknown preset %q (known: %s)", name, strings.Join(PresetNames(), ", ")))

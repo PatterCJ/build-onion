@@ -526,6 +526,7 @@ func printPackages(w io.Writer, r *peel.Report) {
 	fmt.Fprintf(w, "\npackages in %s (%d)\n", r.Artifact, len(r.Packages))
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "ECOSYSTEM\tPACKAGE\tVERSION\tOUTCOME\tDETAIL")
+	fmt.Fprintln(tw, "---------\t-------\t-------\t-------\t------")
 	for _, p := range r.Packages {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.Ecosystem, p.Name, p.Version, p.Outcome, p.Detail)
 	}
@@ -535,6 +536,8 @@ func printPackages(w io.Writer, r *peel.Report) {
 func printReport(w io.Writer, r *peel.Report) {
 	fmt.Fprintf(w, "peeling %s\n  %s\n\n", r.Artifact, r.Digest)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "SECTION\tRESULT\tCHECK\tDETAIL")
+	fmt.Fprintln(tw, "-------\t------\t-----\t------")
 	layer := ""
 	counts := map[peel.Status]int{}
 	for _, res := range r.Results {
@@ -546,6 +549,9 @@ func printReport(w io.Writer, r *peel.Report) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", l, res.Status, res.Check, res.Detail)
 	}
 	tw.Flush()
+	if len(r.NotPerformed) > 0 {
+		fmt.Fprintln(w)
+	}
 	for _, np := range r.NotPerformed {
 		fmt.Fprintf(w, "not performed: %s\n", np)
 	}

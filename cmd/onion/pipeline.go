@@ -109,6 +109,8 @@ func cmdGate(args []string) error {
 	fs.StringVar(&p.Context.RunURL, "run-url", "", "URL of this run")
 	out := fs.String("out", "", "write the verdict JSON here")
 	ghOut := fs.String("github-output", "", "append releasable=true|false here")
+	rulesPath := fs.String("branch-rules", "", "GitHub 'rules for a branch' JSON for the release branch (for policy repository requirements)")
+	fs.StringVar(&p.DefaultBranch, "default-branch", "", "the repository's default branch (for tag releases)")
 	fs.Parse(args)
 	if p.Context.Event == "" || p.Context.Ref == "" || *snapPath == "" {
 		return errors.New("--event, --ref and --snapshot are required")
@@ -127,6 +129,11 @@ func cmdGate(args []string) error {
 		return err
 	}
 	p.SourceDir, p.ManifestPath, p.PolicyPath = s.source, s.manifest, *policyPath
+	if *rulesPath != "" {
+		if p.BranchRules, err = os.ReadFile(*rulesPath); err != nil {
+			return err
+		}
+	}
 	v, err := gate.Evaluate(p, pol, m)
 	if err != nil {
 		return err

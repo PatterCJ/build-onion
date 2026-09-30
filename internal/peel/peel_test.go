@@ -487,6 +487,31 @@ func TestBuildInputsGrades(t *testing.T) {
 	}
 }
 
+func TestRepositoryProtectionsShown(t *testing.T) {
+	w := newWorld()
+	on := true
+	w.inv.Gate.Repository = &gate.RepoCheck{Branch: "main", Rules: []string{"non_fast_forward", "pull_request"}, Approvals: 1,
+		CodeOwnerReview: true, CodeOwnersFile: ".github/CODEOWNERS", OwnedSensitive: 6, TagOnDefault: &on}
+	r := Run(w.input(t))
+	for _, want := range []string{
+		"PASSED gate/branch rules: main: 1 approval(s), code-owner review",
+		"PASSED gate/code owners: .github/CODEOWNERS owns all 6",
+		"PASSED gate/tag on default branch",
+	} {
+		if !strings.Contains(lines(r), want) {
+			t.Errorf("missing %q in:\n%s", want, lines(r))
+		}
+	}
+	w.inv.Gate.Repository = &gate.RepoCheck{Branch: "main", Problems: []string{"main allows force pushes"}}
+	if r := Run(w.input(t)); r.Verdict != Finding {
+		t.Fatalf("a recorded protection problem must be a finding, got %s", r.Verdict)
+	}
+	w.inv.Gate.Repository = nil
+	if r := Run(w.input(t)); !strings.Contains(lines(r), "NOTE gate/repository protections: not required by the policy") {
+		t.Fatalf("absent check not noted:\n%s", lines(r))
+	}
+}
+
 func TestOlderInventoryShapes(t *testing.T) {
 	// Inventories written before multi-ecosystem support used ecosystem "go"
 	// and mainModules; they must still verify.

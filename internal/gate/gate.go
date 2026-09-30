@@ -29,6 +29,12 @@ type Params struct {
 	Base         string // previous build point (e.g. the push's "before"); empty if unknown
 	Context      Context
 	Fork         bool // the commit comes from a fork
+	// BranchRules is GitHub's "rules for a branch" response (JSON) for the
+	// branch being released, read with a read-only token. Needed only when
+	// the policy has repository requirements.
+	BranchRules []byte
+	// DefaultBranch is the repository's default branch, for tag releases.
+	DefaultBranch string
 }
 
 // Context is what the CI platform says triggered this run.
@@ -55,8 +61,10 @@ type Verdict struct {
 	// subset the build can read is OpaqueInputs.
 	OpaqueChange []string `json:"opaqueChange,omitempty"`
 	OpaqueInputs []string `json:"opaqueInputs,omitempty"`
-	PolicyDigest string   `json:"policyDigest,omitempty"`
-	Context      Context  `json:"context"`
+	// Repository is the result of the policy's repository requirements.
+	Repository   *RepoCheck `json:"repository,omitempty"`
+	PolicyDigest string     `json:"policyDigest,omitempty"`
+	Context      Context    `json:"context"`
 }
 
 // Evaluate runs the gate.
@@ -99,6 +107,12 @@ func Evaluate(p Params, pol *policy.Policy, m *manifest.Manifest) (*Verdict, err
 			if len(m.Build.Inputs) == 0 || matchAny(m.Build.Inputs, f) || matchAny(always, f) {
 				v.OpaqueInputs = append(v.OpaqueInputs, f)
 			}
+		}
+	}
+	if v.Repository = checkRepository(p, pol, m); v.Repository != nil && len(v.Repository.Problems) > 0 {
+		v.Blocked = true
+		for _, prob := range v.Repository.Problems {
+			v.BlockedBy = append(v.BlockedBy, "repository: "+prob)
 		}
 	}
 	if pol.BlockOpaqueInputs && len(v.OpaqueInputs) > 0 {

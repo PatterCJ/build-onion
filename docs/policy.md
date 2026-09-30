@@ -61,6 +61,24 @@ jobs:
 
 Then have repositories call `acme/platform/.github/workflows/secure-build.yml@<sha>`, and require that workflow with a repository ruleset. When verifying, pin the signer to your wrapper's build-onion ref with `onion peel --signer-ref`.
 
+## Repository requirements
+
+The gate can refuse to build unless the repository is protected. It reads the release branch's active rules and your `CODEOWNERS` file with the workflow's read-only token; no admin access is needed.
+
+```yaml
+repository:
+  requirePullRequest: true      # the branch's rules require pull requests
+  minApprovals: 1               # at least this many approvals
+  requireCodeOwnerReview: true  # code owners must approve
+  blockForcePush: true          # force pushes are blocked
+  requireCodeOwners: true       # CODEOWNERS names an owner for every build-configuration file
+  tagsFromDefaultBranch: true   # a tag release must point at a commit on the default branch
+```
+
+Branch requirements are read from [rulesets](https://docs.github.com/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets); classic branch protection settings need admin access to read, so they aren't used. For tag releases, the default branch's rules are checked. The verified protections are recorded in the signed inventory, and `peel` lists them in its gate section.
+
+On a repository with a single maintainer, GitHub won't let you approve your own pull request, so leave `minApprovals` at 0 and `requireCodeOwnerReview` off. `requirePullRequest`, `blockForcePush`, `requireCodeOwners` and `tagsFromDefaultBranch` still apply.
+
 ## Repository settings
 
 build-onion reads what it needs with the workflow's read-only token. Monitor your repository's configuration (branch rules, token defaults, required reviews) separately, on a schedule and outside the build, with [OpenSSF Scorecard](https://github.com/ossf/scorecard-action) or [OpenSSF Allstar](https://github.com/ossf/allstar). Both are free.

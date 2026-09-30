@@ -17,6 +17,8 @@ jobs:
       contents: read
       id-token: write
     uses: ./.github/workflows/onion-build.yml
+    with:
+      policy: .build-onion/policy.yml
 
   # An ordinary pipeline scan. build-onion doesn't run or judge it; the job
   # records that it ran, when, and against which source snapshot.
@@ -89,6 +91,7 @@ jobs:
     with:
       snapshot: ${{ needs.build.outputs.snapshot }}
       releasable: ${{ needs.build.outputs.releasable }}
+      policy: .build-onion/policy.yml
 
   publish:
     needs: [build, verify]
