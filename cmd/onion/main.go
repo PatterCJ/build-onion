@@ -31,6 +31,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/peel"
+	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
@@ -47,7 +48,7 @@ Usage:
   onion source    snapshot --out FILE | verify --snapshot FILE [--expect DIGEST]
   onion gate      --snapshot FILE --event E --ref REF [--policy FILE] [--base SHA] [--out FILE]
   onion fetch     [--source DIR] [--manifest FILE] --cache DIR [--snapshot FILE] [--egress-out FILE]
-  onion build     [--source DIR] [--manifest FILE] --cache DIR --out DIR [--snapshot FILE]
+  onion build     [--source DIR] [--manifest FILE] --cache DIR --out DIR [--snapshot FILE] [--stage-dir DIR]
   onion record    job|workflow|build-onion|scan --out FILE [flags]
   onion compare   --staged DIR --rebuilt DIR [--out FILE]
   onion digest    [--oci] PATH...
@@ -165,11 +166,12 @@ func cmdFetch(args []string) error {
 		return err
 	}
 	var rec *egress.Record
-	err = guarded(s.source, *snap, m, func() error {
+	_, cleanup, err := guarded(s, *snap, "", m, func(dir string) error {
 		var ferr error
-		rec, ferr = builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Fetch(s.source, *cache, m)
+		rec, ferr = builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Fetch(dir, *cache, m)
 		return ferr
 	})
+	cleanup()
 	// Written even when fetch failed: the record of what was attempted is
 	// the evidence.
 	if rec != nil {
@@ -197,22 +199,56 @@ func printEgress(rec *egress.Record) {
 	}
 }
 
-// guarded runs step between two source verifications, so anything the step
-// changes in the tree besides declared outputs and scratch fails the build.
-func guarded(dir, snap string, m *manifest.Manifest, step func() error) error {
-	if snap == "" {
-		return step()
+// guarded runs a step against a staged copy of the declared build inputs:
+// the checkout is verified against the snapshot, the inputs (build.inputs
+// plus the manifest, lockfiles and Dockerfile) are copied into a stage and
+// re-hashed, the step runs there, and afterwards every staged input must be
+// unchanged and every new file declared. Without a snapshot (local use), the
+// step runs in the checkout directly. cleanup removes a stage guarded made.
+func guarded(s sourceFlags, snapPath, stageDir string, m *manifest.Manifest, step func(dir string) error) (string, func(), error) {
+	noop := func() {}
+	if snapPath == "" {
+		return s.source, noop, step(s.source)
 	}
-	if err := verifySource(dir, snap, "", m.Writable()); err != nil {
-		return fmt.Errorf("before step: %w", err)
+	if err := verifySource(s.source, snapPath, "", m.Writable()); err != nil {
+		return "", noop, fmt.Errorf("before step: %w", err)
 	}
-	if err := step(); err != nil {
-		return err
+	snap, err := loadSnapshot(snapPath, "")
+	if err != nil {
+		return "", noop, err
 	}
-	if err := verifySource(dir, snap, "", m.Writable()); err != nil {
-		return fmt.Errorf("after step: %w", err)
+	inputs, err := snap.Subset(m.Build.Inputs, m.AlwaysInputs(s.manifest))
+	if err != nil {
+		return "", noop, err
 	}
-	return nil
+	cleanup := noop
+	if stageDir == "" {
+		if stageDir, err = os.MkdirTemp("", "onion-stage-"); err != nil {
+			return "", noop, err
+		}
+		dir := stageDir
+		cleanup = func() { os.RemoveAll(dir) }
+	} else if entries, err := os.ReadDir(stageDir); err == nil && len(entries) > 0 {
+		return "", noop, fmt.Errorf("stage directory %s is not empty", stageDir)
+	}
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		return "", cleanup, err
+	}
+	if err := source.Stage(s.source, stageDir, inputs); err != nil {
+		return "", cleanup, err
+	}
+	fmt.Fprintf(os.Stderr, "stage: %d of %d tracked files are build inputs\n", len(inputs), len(snap.Files))
+	if err := step(stageDir); err != nil {
+		return stageDir, cleanup, err
+	}
+	d, err := source.VerifyStage(stageDir, inputs, m.Writable())
+	if err != nil {
+		return stageDir, cleanup, err
+	}
+	if !d.Empty() {
+		return stageDir, cleanup, fmt.Errorf("after step: %w", d)
+	}
+	return stageDir, cleanup, nil
 }
 
 func cmdBuild(args []string) error {
@@ -221,7 +257,8 @@ func cmdBuild(args []string) error {
 	s.register(fs)
 	cache := fs.String("cache", "", "dependency cache directory populated by fetch")
 	out := fs.String("out", "", "directory to collect declared output files into")
-	snap := fs.String("snapshot", "", "verify the source against this snapshot before and after")
+	snap := fs.String("snapshot", "", "stage the declared inputs from this snapshot and verify them after the build")
+	stageDir := fs.String("stage-dir", "", "keep the staged tree here (the image build's context); default: a temporary directory")
 	fs.Parse(args)
 	if *cache == "" || *out == "" {
 		return errors.New("--cache and --out are required")
@@ -230,12 +267,14 @@ func cmdBuild(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := guarded(s.source, *snap, m, func() error {
-		return builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Build(s.source, *cache, m)
-	}); err != nil {
+	dir, cleanup, err := guarded(s, *snap, *stageDir, m, func(dir string) error {
+		return builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Build(dir, *cache, m)
+	})
+	defer cleanup()
+	if err != nil {
 		return err
 	}
-	digests, err := builder.Collect(s.source, *out, m)
+	digests, err := builder.Collect(dir, *out, m)
 	if err != nil {
 		return err
 	}

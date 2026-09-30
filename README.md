@@ -51,17 +51,16 @@ Each line resolves and builds its own `onion` CLI from the exact build-onion com
 
 | Layer | Protection |
 |---|---|
-| **Source** | Every tracked file is sha256-hashed before anything runs, and re-verified in every job and before and after each step. New files outside declared outputs fail the build, even when `.gitignore` would hide them. |
+| **Source** | Every tracked file is sha256-hashed before anything runs. Fetch and build see only the declared `build.inputs`, copied from the snapshot and re-verified after each step; tests, fixtures and docs don't exist for the build. New files outside declared outputs fail the build. |
 | **Toolchain** | The builder image and every `FROM` are pinned by digest, and every action by commit SHA, or the build fails. |
 | **Gate** | Only release refs and events are sealed. Pull requests, feature branches and forks build but are never signed. `pull_request_target` and `workflow_run` are refused outright. Changes to workflows, the manifest, lockfiles, the Dockerfile or the policy are flagged. |
 | **Dependencies** | Fetched separately and verified against the lockfile. The build sees only that cache. |
 | **Egress** | With an allow-list, fetch's only route out is a filtering proxy: undeclared hosts fail the build, metadata and loopback addresses are unreachable, and every connection is sealed into the inventory. Without one, `peel` reports fetch's network as DEGRADED. |
-| **Egress** | With an allow-list, fetch's only route out is a filtering proxy: undeclared hosts fail the build, metadata and loopback addresses are unreachable, and every connection is sealed into the inventory. Without one, `peel` reports fetch's network as DEGRADED. |
-| **Rebuild** | The security line reproduces the build from the same hashed inputs. A file swapped only while the compiler read it, then restored, still changes the bytes. |
+| **Rebuild** | The security line reproduces the build from the same hashed inputs on its own runners, and seals only if the bytes match. |
 | **Pipeline** | The build-onion commit and CLI digest, every workflow with every action it pins, each job's runner image and tool versions, and every recorded scan. |
 | **Seal** | SLSA v1 provenance, a CycloneDX SBOM of what was actually built, and the inventory, signed by the security line's identity. |
 
-### Why it's SLSA Build Level 3
+### SLSA Build Level 3
 
 | Requirement | How |
 |---|---|
@@ -79,7 +78,7 @@ $ onion peel ghcr.io/pattercj/build-onion@sha256:… --repo PatterCJ/build-onion
 |---|---|
 | **seal** | Every Sigstore bundle verifies. The signer is the security line, the certificate's repo and commit match the claim, and one run signed provenance, SBOM and inventory. |
 | **provenance** | SLSA v1, the builder is build-onion, a hosted runner, and the repo and commit match. With `--ref`, the source ref must be one the verifier accepts. |
-| **inventory** | Same commit and run; the artifact is a declared output; the builder is pinned; the build had no network; inputs are locked. |
+| **inventory** | Same commit and run; the artifact is a declared output; the builder is pinned; the build had no network; inputs are locked; which files the build could read. |
 | **gate** | The gate allowed release. Sensitive changes are shown as notes. |
 | **egress** | Fetch ran behind the allow-list, and every recorded connection was declared. |
 | **verification** | The independent rebuild produced this exact digest. |
@@ -112,9 +111,9 @@ Bundles come from the GitHub attestations API, or from `--bundles DIR` for offli
 - [Policy](docs/policy.md): release rules, sensitive paths, and making them mandatory across an org.
 - [Threat model](docs/threat-model.md): exactly what this does and doesn't stop.
 
-## Portability
+## The `onion` CLI
 
-The `onion` CLI takes everything as flags and knows nothing about GitHub. The GitHub Actions workflows are the first integration: they supply events, refs and Sigstore signing through GitHub's attestations. The same commands (`source`, `gate`, `fetch`, `build`, `compare`, `record`, `inventory`, `peel`) are the building blocks for other CI systems and cloud build services such as AWS CodeBuild.
+The CLI takes everything as flags and has no dependency on GitHub; the reusable workflows supply events, refs and Sigstore signing. Its commands (`validate`, `source`, `gate`, `fetch`, `build`, `compare`, `record`, `inventory`, `peel`) can be driven from any CI system.
 
 ## Development
 
@@ -123,7 +122,7 @@ make test        # go vet + go test
 make validate    # onion validate on this repo
 ```
 
-The Sigstore tests verify a real GitHub Actions–signed bundle offline.
+To add a lockfile ecosystem, add a parser to `internal/lockfile` and a real-package fixture to `internal/deps/testdata/generate.sh`.
 
 ## License
 

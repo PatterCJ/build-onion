@@ -97,6 +97,9 @@ func TestGenerate(t *testing.T) {
 	if len(inv.Local) != 1 || inv.Local[0].Name != "github.com/acme/widget" || inv.Local[0].Ecosystem != "golang" {
 		t.Errorf("local = %+v", inv.Local)
 	}
+	if bi := inv.Build.Inputs; bi == nil || bi.Files != 3 || bi.Of != 3 || !digest.Valid(bi.Digest) || len(bi.Patterns) != 0 {
+		t.Errorf("build inputs = %+v", inv.Build.Inputs)
+	}
 	if inv.Lockfiles[0].Ecosystem != "golang" || inv.Dependencies[0].Ecosystem != "golang" {
 		t.Errorf("ecosystem not recorded: %+v %+v", inv.Lockfiles[0], inv.Dependencies[0])
 	}

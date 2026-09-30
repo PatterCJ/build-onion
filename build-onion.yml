@@ -22,6 +22,12 @@ dependencies:
     - host: storage.googleapis.com
 
 build:
+  # The only files fetch and build can read (plus this manifest, go.sum and the
+  # Dockerfile). Tests' fixtures under internal/deps/testdata aren't staged.
+  inputs:
+    - go.mod
+    - cmd/**/*.go
+    - internal/**/*.go
   # Runs with --network none against the fetched module cache.
   run: go build -ldflags="-s -w -buildid=" -o dist/onion ./cmd/onion
   env:

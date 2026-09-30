@@ -83,6 +83,11 @@ type Build struct {
 	// Scratch lists paths, besides outputs, that fetch or build may create in
 	// the source tree (node_modules, build/). Any other new file fails the build.
 	Scratch []string `yaml:"scratch" json:"scratch,omitempty"`
+	// Inputs are globs ("**" spans directories) naming the tracked files fetch
+	// and build may see. The manifest, lockfiles and Dockerfile are always
+	// included. Everything else — tests, fixtures, docs — isn't staged, so
+	// the build can't read it. Empty means every tracked file.
+	Inputs []string `yaml:"inputs" json:"inputs,omitempty"`
 }
 
 type Outputs struct {
@@ -178,6 +183,11 @@ func (m *Manifest) Validate() error {
 	if strings.TrimSpace(m.Build.Run) == "" {
 		add("build.run is required")
 	}
+	for _, g := range m.Build.Inputs {
+		if !inputGlobRe.MatchString(g) || strings.HasPrefix(g, "/") || strings.Contains("/"+g+"/", "/../") {
+			add("build.inputs: %q must be a relative glob of letters, digits, . _ + / - * ?", g)
+		}
+	}
 	for _, p := range m.Build.Scratch {
 		if err := checkRelPath(p); err != nil || p == "." {
 			add("build.scratch: %q must be a subpath of the repo", p)
@@ -244,6 +254,15 @@ func (m *Manifest) ValidateEgress() error {
 	return errors.Join(errs...)
 }
 
+// AlwaysInputs are the files every build sees, whatever build.inputs says.
+func (m *Manifest) AlwaysInputs(manifestPath string) []string {
+	out := append([]string{manifestPath}, m.Dependencies.Lockfiles...)
+	if m.Outputs.Image != nil {
+		out = append(out, m.Outputs.Image.Dockerfile)
+	}
+	return out
+}
+
 // Writable lists every path the build may create: declared outputs plus
 // scratch. Source verification treats any other new file as tampering.
 func (m *Manifest) Writable() []string {
@@ -257,6 +276,8 @@ func IsPinnedImage(ref string) bool { return pinnedImageRe.MatchString(ref) }
 // artifact names and shell arguments unchanged: no spaces, quotes, newlines or
 // glob characters.
 var safePathRe = regexp.MustCompile(`^[A-Za-z0-9._+/-]+$`)
+
+var inputGlobRe = regexp.MustCompile(`^[A-Za-z0-9._+/*?-]+$`)
 
 func checkRelPath(p string) error {
 	switch {

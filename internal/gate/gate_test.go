@@ -132,3 +132,16 @@ sensitivePaths: [scripts/**]
 		t.Error("pull_request_target accepted as a release event")
 	}
 }
+
+func TestRequireBuildInputs(t *testing.T) {
+	f := setup(t)
+	pol := policy.Default()
+	pol.RequireBuildInputs = true
+	if v := f.eval(t, "push", "refs/heads/main", "", pol); !v.Blocked {
+		t.Fatal("manifest without build.inputs built under a policy that requires them")
+	}
+	f.m.Build.Inputs = []string{"*.go"}
+	if v := f.eval(t, "push", "refs/heads/main", "", pol); v.Blocked {
+		t.Fatalf("declared inputs still blocked: %+v", v)
+	}
+}

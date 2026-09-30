@@ -475,6 +475,18 @@ func TestImagePackagesAttributedByLayer(t *testing.T) {
 	}
 }
 
+func TestBuildInputsGrades(t *testing.T) {
+	w := newWorld()
+	w.inv.Build.Inputs = &inventory.Inputs{Patterns: []string{"cmd/**/*.go"}, Files: 12, Of: 40, Digest: digest.Bytes([]byte("x"))}
+	if r := Run(w.input(t)); r.Verdict != Passed || !strings.Contains(lines(r), "PASSED inventory/build inputs: the build saw 12 of 40 tracked files (cmd/**/*.go)") {
+		t.Fatalf("declared:\n%s", lines(r))
+	}
+	w.inv.Build.Inputs = &inventory.Inputs{Files: 40, Of: 40}
+	if r := Run(w.input(t)); r.Verdict != Passed || !strings.Contains(lines(r), "NOTE inventory/build inputs: the build could read all 40") {
+		t.Fatalf("undeclared:\n%s", lines(r))
+	}
+}
+
 func TestOlderInventoryShapes(t *testing.T) {
 	// Inventories written before multi-ecosystem support used ecosystem "go"
 	// and mainModules; they must still verify.

@@ -57,6 +57,12 @@ func Evaluate(p Params, pol *policy.Policy, m *manifest.Manifest) (*Verdict, err
 		v.Reason = "forbidden event"
 		return v, nil
 	}
+	if pol.RequireBuildInputs && len(m.Build.Inputs) == 0 {
+		v.Blocked = true
+		v.BlockedBy = append(v.BlockedBy, "policy requires build.inputs: declare which files the build may read")
+		v.Reason = "build inputs not declared"
+		return v, nil
+	}
 	v.Releasable, v.Reason = pol.Releasable(p.Context.Event, p.Context.Ref)
 	if v.Releasable && p.Fork {
 		v.Releasable, v.Reason = false, "commit comes from a fork"

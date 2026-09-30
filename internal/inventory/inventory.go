@@ -78,6 +78,16 @@ type Build struct {
 	Env     map[string]string `json:"env,omitempty"`
 	Network string            `json:"network"`
 	Image   *ImageBuild       `json:"image,omitempty"`
+	// Inputs is the part of the source the build could read.
+	Inputs *Inputs `json:"inputs,omitempty"`
+}
+
+// Inputs records the staged subset of the snapshot that fetch and build saw.
+type Inputs struct {
+	Patterns []string `json:"patterns,omitempty"` // empty: every tracked file
+	Files    int      `json:"files"`
+	Of       int      `json:"of"`     // tracked files in the snapshot
+	Digest   string   `json:"digest"` // canonical digest of the staged subset
 }
 
 // ImageBuild records how the image output was assembled. With every base
@@ -258,6 +268,11 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		}
 		inv.Outputs = append(inv.Outputs, Output{Kind: "oci-image", Name: img.Name, Digest: d})
 	}
+	inputs, err := p.Snapshot.Subset(m.Build.Inputs, m.AlwaysInputs(p.ManifestPath))
+	if err != nil {
+		return nil, nil, err
+	}
+	inv.Build.Inputs = &Inputs{Patterns: m.Build.Inputs, Files: len(inputs), Of: len(p.Snapshot.Files), Digest: source.SubsetDigest(inputs)}
 	if err := checkScans(inv); err != nil {
 		return nil, nil, err
 	}

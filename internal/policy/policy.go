@@ -24,6 +24,9 @@ type Policy struct {
 	// SensitivePaths are added to the built-in list (workflows, manifest,
 	// lockfiles, Dockerfile, the policy itself). Globs; "dir/**" matches a subtree.
 	SensitivePaths []string `yaml:"sensitivePaths" json:"sensitivePaths,omitempty"`
+	// RequireBuildInputs refuses to build a manifest that doesn't narrow
+	// build.inputs, so no build can read the whole repository by default.
+	RequireBuildInputs bool `yaml:"requireBuildInputs" json:"requireBuildInputs,omitempty"`
 }
 
 // Release says when a build may be sealed. Anything else still builds and is

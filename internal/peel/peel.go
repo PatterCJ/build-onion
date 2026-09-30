@@ -242,6 +242,14 @@ func Run(in Input) *Report {
 		r.check("inventory", "builder pinned by digest", manifest.IsPinnedImage(inv.Builder.Image), Finding, "%s", inv.Builder.Image)
 		r.check("inventory", "build ran without network", inv.Build.Network == "none", Finding, "network %q", inv.Build.Network)
 		r.check("inventory", "inputs locked", len(inv.Lockfiles) > 0, Finding, "%d lockfile(s), %d locked dependencies", len(inv.Lockfiles), len(inv.Dependencies))
+		switch bi := inv.Build.Inputs; {
+		case bi == nil:
+			r.grade("inventory", "build inputs", Note, "not recorded; this inventory predates build.inputs")
+		case len(bi.Patterns) == 0:
+			r.grade("inventory", "build inputs", Note, "the build could read all %d tracked files; declare build.inputs to narrow it", bi.Of)
+		default:
+			r.grade("inventory", "build inputs", Passed, "the build saw %d of %d tracked files (%s)", bi.Files, bi.Of, strings.Join(bi.Patterns, ", "))
+		}
 		checkGate(r, &inv)
 		checkEgress(r, &inv)
 		checkVerification(r, &inv, in.Digest)
@@ -637,7 +645,7 @@ func checkRebuild(r *Report, dir string, inv *inventory.Inventory, want string) 
 		r.grade("rebuild", "reproduces artifact", Failed, "load manifest: %v", err)
 		return
 	}
-	got, err := Rebuild(dir, m, out.Name)
+	got, err := Rebuild(dir, inv.Manifest.Path, m, out.Name)
 	if err != nil {
 		r.grade("rebuild", "reproduces artifact", Failed, "%v", err)
 		return

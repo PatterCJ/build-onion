@@ -3,29 +3,34 @@ package peel
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/PatterCJ/build-onion/internal/builder"
 	"github.com/PatterCJ/build-onion/internal/manifest"
+	"github.com/PatterCJ/build-onion/internal/source"
 )
 
-// Rebuild exports the committed tree at HEAD of dir into a scratch directory,
-// runs the manifest's fetch and hermetic build, and returns the digest of the
-// named output file. Uncommitted changes in dir never reach the rebuild.
-func Rebuild(dir string, m *manifest.Manifest, output string) (string, error) {
+// Rebuild stages the manifest's declared inputs from the clean checkout at
+// dir into a scratch directory, exactly as the pipeline does, runs the fetch
+// and hermetic build there, and returns the digest of the named output file.
+// Uncommitted changes and undeclared files never reach the rebuild.
+func Rebuild(dir, manifestPath string, m *manifest.Manifest, output string) (string, error) {
+	snap, err := source.Take(dir)
+	if err != nil {
+		return "", err
+	}
+	inputs, err := snap.Subset(m.Build.Inputs, m.AlwaysInputs(manifestPath))
+	if err != nil {
+		return "", err
+	}
 	tmp, err := os.MkdirTemp("", "onion-rebuild-")
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(tmp)
 	src := filepath.Join(tmp, "src")
-	if err := os.Mkdir(src, 0o755); err != nil {
+	if err := source.Stage(dir, src, inputs); err != nil {
 		return "", err
-	}
-	archive := exec.Command("sh", "-c", `git -C "$1" archive --format=tar HEAD | tar -x -C "$2"`, "sh", dir, src)
-	if out, err := archive.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("export source: %v: %s", err, out)
 	}
 	r := builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}
 	cache := filepath.Join(tmp, "cache")

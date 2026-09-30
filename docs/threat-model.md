@@ -1,8 +1,6 @@
 # Threat model
 
-build-onion's defensible claim: it verifies declared build inputs, records what the build consumed and produced, detects violations and unexplained differences, and states plainly where its evidence stops. It doesn't claim that software is free of malicious behavior.
-
-build-onion is a claim about **where an artifact came from**. This page says precisely which attacks that claim defeats and which it doesn't, so nobody over-trusts a green `peel`.
+**Scope:** build-onion verifies declared build inputs, records what the build consumed and produced, detects violations and unexplained differences, and states where its evidence stops. It does not establish that software is free of malicious behavior. A passing `peel` means the artifact came from the claimed commit, pipeline and inputs; the tables below list what that does and doesn't cover.
 
 ## Trust boundary
 
@@ -33,9 +31,10 @@ build-onion is a claim about **where an artifact came from**. This page says pre
 | Source tampered after release (lockfile edited, commit rewritten) | **source** layer recomputes tree hash and file digests from a checkout. |
 | A source file swapped on the build machine and left that way | Every tracked file is sha256-hashed before the build and re-verified before and after fetch and build. Git's index and stat cache aren't consulted, so they can't be used to hide the change. |
 | A file planted in the tree during the build (including `.gitignore`d paths) | Any new file outside declared outputs and `build.scratch` fails the build. |
+| A payload hidden in repository files the build doesn't need (test fixtures, docs, sample data), pulled in by a build script | With `build.inputs`, fetch and build run on a copy containing only the declared inputs. Other files aren't there to be read. |
 | Mutable action tags repointed to malicious code | Unpinned `uses:` fails `validate`. Every action SHA that ran is in the signed inventory, so after an incident "which builds ran this commit of that action?" is a query. |
 | Fork or PR code reaching release credentials | `pull_request_target` and `workflow_run` are refused. PRs, forks and non-release refs build but are never sealed. |
-| A malicious commit to a release branch | Not blocked by provenance alone, but surfaced: changes to workflows, the manifest, lockfiles, Dockerfile or policy are flagged in the signed inventory, and any commit-risk scan the pipeline runs is recorded against the source snapshot. `peel` shows sensitive changes as warnings. |
+| A malicious commit to a release branch | Not blocked by provenance alone, but surfaced: changes to workflows, the manifest, lockfiles, Dockerfile or policy are flagged in the signed inventory, and any commit-risk scan the pipeline runs is recorded against the source snapshot. `peel` shows sensitive changes as notes. |
 | A file swapped only while the compiler reads it, then restored | The security line rebuilds from the same hashed inputs on its own runners and seals only if its bytes match the build line's. |
 | The build approving its own output | The build line has no signing rights. Only the security line seals, and only after its own rebuild matches; the publish line can't sign and releases only what `peel` verifies. |
 | A crafted build output exploiting the SBOM generator | The SBOM generator runs in its own job with no signing rights. The signing job only hashes outputs with build-onion's own code, checks that the SBOMs describe exactly those bytes, and never runs a third-party parser over build output. An exploit could corrupt an SBOM, but not sign anything. |
@@ -45,10 +44,10 @@ build-onion is a claim about **where an artifact came from**. This page says pre
 | A scan report from another build attached to this one | Scan records must name this build's source snapshot or one of its output digests, or the security line refuses to seal. |
 | Build is not what the manifest says it is | **rebuild** layer replays the manifest and compares bytes. |
 
-## Not defeated (be honest about these)
+## Not covered
 
 - **A compromise of both build environments at once.** The independent rebuild catches an environment that alters output, unless the same compromise affects the security line's runners too. Pointing `onion-verify.yml`'s `runs-on` at separate infrastructure narrows this.
-- **Build behavior.** build-onion checks what a build consumed and produced, not what it did along the way (processes, files touched, connections). Observed-behavior recording is on the roadmap.
+- **Build behavior.** build-onion checks what a build consumed and produced, not what it did along the way (processes started, files read, connections attempted).
 - **Unrestricted fetch.** A manifest without `dependencies.egress` gives fetch full network. `peel` reports it as DEGRADED rather than clean.
 - **Shared hosts on the allow-list.** The proxy filters by host name and doesn't intercept TLS. On a shared host such as `storage.googleapis.com`, it can't tell one tenant's bucket from another's, so data could be sent to an attacker's bucket there. An artifact store you control narrows this to a host you trust.
 - **Malicious code at the commit.** If the commit itself contains a backdoor, build-onion faithfully proves the backdoor was built from that commit. Provenance is not code review — pair it with review and scanning.

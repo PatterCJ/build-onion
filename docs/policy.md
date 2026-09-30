@@ -17,6 +17,9 @@ release:
 sensitivePaths:
   - scripts/release/**
   - Makefile
+
+# Refuse to build a manifest that doesn't declare build.inputs.
+requireBuildInputs: true
 ```
 
 With no policy file, the defaults above apply.
@@ -54,4 +57,4 @@ Then have repositories call `acme/platform/.github/workflows/secure-build.yml@<s
 
 ## Where it's recorded
 
-The gate's verdict goes into the signed inventory: releasable or not and why, the diff base, the build-sensitive files changed, and the sha256 of the policy file. `onion peel` fails if the gate didn't allow a release, and shows sensitive changes as warnings.
+The gate's verdict goes into the signed inventory: releasable or not and why, the diff base, the build-sensitive files changed, and the sha256 of the policy file. `onion peel` fails if the gate didn't allow a release, and shows sensitive changes as notes.

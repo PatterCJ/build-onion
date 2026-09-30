@@ -12,6 +12,7 @@ The manifest is the whole contract. Anything not declared is not available to th
 | `dependencies.egress` | The only hosts `fetch` may reach, each with an optional `port` (default 443) and `private: true` if it lives on a private network. See [Restricting fetch](#restricting-fetch). Without it, fetch has unrestricted network and `peel` reports that as DEGRADED. |
 | `dependencies.env` | Environment for `fetch` only, typically pointing a package manager at your artifact store. |
 | `build.run` / `env` | Runs with `--network none`, as your UID, with `HOME=/tmp`. `env` applies to this step only, not to `fetch`. |
+| `build.inputs` | Globs (`**` spans directories) naming the files fetch and build may read, for example `[src/**, cmd/**/*.go, go.mod]`. The manifest, lockfiles and Dockerfile are always included. Nothing else is staged: tests, fixtures, docs and untracked files don't exist for the build. A pattern that matches nothing fails the build. Without it, the build sees every tracked file and `peel` notes it. |
 | `build.scratch` | Other paths `fetch` or `build` may create in the tree (`node_modules`, `build/`). Any other new file fails the build. |
 | `outputs.files` | Must not exist in the source; they must be produced by the build. |
 | `outputs.image` | Built from the Dockerfile with `RUN` steps networkless, as a single-platform reproducible OCI image. Every `FROM` must be pinned. |
@@ -33,14 +34,17 @@ build:
 ```
 
 ```yaml
-# Python
-builder: { image: docker.io/library/python:3.13-slim@sha256:… }
+# Python (see build-onion-example-python for a complete repo)
+builder: { image: docker.io/library/python:3.12-slim-bookworm@sha256:… }
 dependencies:
-  lockfiles: [requirements.lock]
-  fetch: pip download --require-hashes -r requirements.lock -d /wheels
-  cache: /wheels
+  lockfiles: [requirements.txt]   # hash-pinned, e.g. `uv export --format requirements-txt`
+  fetch: "pip download --require-hashes --only-binary=:all: --no-deps -r requirements.txt -d /cache/wheels"
+  cache: /cache
+  egress: [{host: pypi.org}, {host: files.pythonhosted.org}]
 build:
-  run: pip wheel --no-index --find-links /wheels --no-deps -w dist .
+  inputs: [src/**]
+  run: pip install --no-index --find-links /cache/wheels --require-hashes --no-deps --no-compile -r requirements.txt --target dist/site
+  scratch: [dist/site]
 ```
 
 ### Restricting fetch
@@ -101,8 +105,6 @@ Every package in the artifact gets one outcome:
 
 Packages declared but not shipped (tests, tooling, other platforms) are counted as a note.
 
-To add an ecosystem, add one parser file to `internal/lockfile` and a real fixture to `internal/deps/testdata/generate.sh`.
-
 ## 2. Make it reproducible
 
 The security line seals only if its independent rebuild matches the build line byte for byte, so the build must be deterministic. Common fixes:
@@ -125,7 +127,7 @@ jobs:
     permissions: { contents: read, id-token: write }
     uses: PatterCJ/build-onion/.github/workflows/onion-build.yml@<sha>
 
-  # …your own scan jobs here, uploading onion-record-* artifacts (see scans.md)…
+  # …your own scan jobs here, uploading onion-record-scan-* artifacts (see scans.md)…
 
   verify:
     needs: [build]
@@ -134,6 +136,7 @@ jobs:
     with:
       snapshot: ${{ needs.build.outputs.snapshot }}
       releasable: ${{ needs.build.outputs.releasable }}
+      # policy: same file as the build line, if you use one
 
   publish:
     needs: [build, verify]
