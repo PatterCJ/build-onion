@@ -163,11 +163,12 @@ Pin each one to a full commit SHA. A calling job must grant at least the permiss
 
 ### Complete caller
 
+Releases from signed tags; pull requests run the build line alone (see `ci.yml` in this repository). `.build-onion/policy.yml` applies without being named.
+
 ```yaml
 name: release
 on:
   push:
-    branches: [main]
     tags: ["v*"]
 
 permissions: {}
@@ -176,8 +177,6 @@ jobs:
   build:
     permissions: { contents: read, id-token: write }
     uses: PatterCJ/build-onion/.github/workflows/onion-build.yml@<sha>
-    with:
-      policy: .build-onion/policy.yml
 
   # Optional: your own scans, recorded (see scans.md).
   scan:
@@ -191,7 +190,6 @@ jobs:
     with:
       snapshot: ${{ needs.build.outputs.snapshot }}
       releasable: ${{ needs.build.outputs.releasable }}
-      policy: .build-onion/policy.yml
 
   publish:
     needs: [build, verify]
@@ -200,7 +198,7 @@ jobs:
     uses: PatterCJ/build-onion/.github/workflows/onion-publish.yml@<sha>
     with:
       image-digest: ${{ needs.verify.outputs.image-digest }}
-      baseline: ghcr.io/acme/widget:v1.4.0
+      baseline: ghcr.io/acme/widget:v1.4.0   # the previous release
 ```
 
 ### `onion-build.yml`: build line
