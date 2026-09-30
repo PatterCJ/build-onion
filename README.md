@@ -158,6 +158,8 @@ make validate    # onion validate on this repo
 
 To add a lockfile ecosystem, add a parser to `internal/lockfile` and a real-package fixture to `internal/deps/testdata/generate.sh`.
 
+Releases come only from signed tags. To release, merge to `main`, then run `scripts/release.sh vX.Y.Z` and approve the publish job.
+
 ## License
 
 MIT
