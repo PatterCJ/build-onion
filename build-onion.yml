@@ -28,6 +28,7 @@ build:
     - go.mod
     - cmd/**/*.go
     - internal/**/*.go
+    - internal/policy/presets.yaml   # compiled in with go:embed
   # Build configuration beyond the lockfile; changes to it are flagged.
   sensitive:
     - go.mod
