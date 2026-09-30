@@ -19,8 +19,11 @@
 #   sbom      SBOMs of the rebuilt outputs. Kept out of seal: the SBOM generator
 #             parses bytes the caller's build produced, so it runs where
 #             there's nothing to sign with.
+#   upstream  every locked package against its public registry: published
+#             bytes, checksum log, signed provenance. Parses registry
+#             responses, so it runs where there's nothing to sign with.
 #   seal      releasable builds only: inventory (source, pipeline, gate, egress,
-#             rebuild, scan records), SBOM, and SLSA provenance, signed
+#             rebuild, upstream, scan records), SBOM, and SLSA provenance, signed
 name: onion-verify
 
 on:
@@ -248,8 +251,44 @@ jobs:
           path: /tmp/onion-rec
           if-no-files-found: error
 
+  upstream:
+    name: upstream registries
+    needs: resolve
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-verify-cli
+          path: /tmp/onion-verify-bin
+      - name: Check every locked package against its public registry
+        run: |
+          echo "${{ needs.resolve.outputs.cli-digest }}  $ONION" | sha256sum -c
+          chmod +x "$ONION"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p /tmp/onion-upstream "$ONION_REC"
+          own=$("$ONION" source snapshot --out /tmp/onion-upstream/source.json)
+          test "$own" = "$SNAPSHOT"
+          "$ONION" upstream --manifest "$MANIFEST" --snapshot /tmp/onion-upstream/source.json \
+            --out /tmp/onion-upstream/upstream.json
+          "$ONION" record job --name upstream --runner "$ImageOS $ImageVersion" --out "$ONION_REC/job-upstream.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-upstream
+          path: /tmp/onion-upstream/upstream.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: onion-record-upstream
+          path: /tmp/onion-rec
+          if-no-files-found: error
+
   seal:
-    needs: [resolve, rebuild, sbom]
+    needs: [resolve, rebuild, sbom, upstream]
     if: inputs.releasable == 'true'
     runs-on: ubuntu-24.04
     # The only job in build-onion that can sign. It runs build-onion's code and
@@ -282,7 +321,7 @@ jobs:
           # build-onion's own records, by exact name. Any other job in the run can
           # upload artifacts, so pipeline facts come only from these; a job that
           # squats one of these names makes the real upload, and the run, fail.
-          pattern: "onion-record-{resolve,validate,fetch,build,verify-resolve,rebuild,sbom}"
+          pattern: "onion-record-{resolve,validate,fetch,build,verify-resolve,rebuild,sbom,upstream}"
           merge-multiple: true
           path: ${{ env.ONION_REC }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -336,6 +375,10 @@ jobs:
         with:
           name: onion-sbom
           path: /tmp/onion-sbom
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: onion-upstream
+          path: /tmp/onion-upstream
       - name: Inventory layer — hash everything, trust nothing reported
         id: subjects
         run: |
@@ -349,6 +392,7 @@ jobs:
           "$ONION" inventory --manifest "$MANIFEST" \
             --snapshot "$snap" --expect-snapshot "$SNAPSHOT" \
             --records "$ONION_REC" --scan-records /tmp/onion-scan-rec --gate /tmp/onion-gate/gate.json --rebuild "$cmp" --egress "$egr" \
+            --upstream /tmp/onion-upstream/upstream.json \
             --platform github-actions \
             --repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --commit "$GITHUB_SHA" --tree "$(git rev-parse 'HEAD^{tree}')" \

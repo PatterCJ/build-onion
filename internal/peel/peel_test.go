@@ -21,6 +21,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
+	"github.com/PatterCJ/build-onion/internal/upstream"
 	"github.com/PatterCJ/build-onion/internal/verify"
 )
 
@@ -84,7 +85,7 @@ func newWorld() *world {
 		inv: inventory.Inventory{
 			Source:       inventory.Source{Repository: repoURL, Commit: commit, Tree: "t"},
 			Builder:      inventory.Builder{Image: builderImage},
-			Lockfiles:    []inventory.FileRef{{Path: "go.sum", Digest: digest.Bytes(nil)}},
+			Lockfiles:    []inventory.FileRef{{Path: "go.sum", Digest: digest.Bytes(nil), Ecosystem: "golang"}},
 			Dependencies: []lockfile.Package{{Ecosystem: "golang", Name: "gopkg.in/yaml.v3", Version: "v3.0.1"}},
 			Local:        []lockfile.Local{{Ecosystem: "golang", Name: "github.com/acme/widget"}},
 			Build:        inventory.Build{Run: "go build", Network: "none"},
@@ -606,5 +607,49 @@ func TestPeelSourceLayer(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in:\n%s", want, joined)
 		}
+	}
+}
+
+func TestPeelUpstream(t *testing.T) {
+	record := func(outcome, detail string) *upstream.Record {
+		return &upstream.Record{
+			CheckedAt: "2026-09-29T12:00:00Z",
+			Lockfiles: []upstream.Lockfile{{Path: "go.sum", Digest: digest.Bytes(nil)}},
+			Results:   []upstream.Result{{Ecosystem: "golang", Name: "gopkg.in/yaml.v3", Version: "v3.0.1", Outcome: outcome, Detail: detail}},
+		}
+	}
+	cases := []struct {
+		rec     *upstream.Record
+		want    string
+		verdict Status
+	}{
+		{nil, "NOTE upstream/registry check: not recorded", Passed},
+		{record(upstream.Logged, ""), "PASSED upstream/golang: 1 locked: 1 logged", Passed},
+		{record(upstream.Mismatch, "go.sum pins h1:x, checksum database has h1:y"), "FINDING upstream/locked bytes are the published bytes: 1 problem(s): mismatch: golang gopkg.in/yaml.v3@v3.0.1", Finding},
+		{record(upstream.Invalid, "bad signature"), "FINDING upstream/locked bytes are the published bytes", Finding},
+		{record(upstream.Error, "timeout"), "DEGRADED upstream/registries reachable", Degraded},
+		{record(upstream.NotFound, "private"), "NOTE upstream/not comparable", Passed},
+	}
+	for _, c := range cases {
+		w := newWorld()
+		w.inv.Upstream = c.rec
+		r := Run(w.input(t))
+		if r.Verdict != c.verdict || !strings.Contains(lines(r), c.want) {
+			t.Errorf("want %q (%s), got %s:\n%s", c.want, c.verdict, r.Verdict, lines(r))
+		}
+	}
+
+	// A record of other lockfiles, or missing a package, can't be graded.
+	w := newWorld()
+	w.inv.Upstream = record(upstream.Logged, "")
+	w.inv.Upstream.Lockfiles[0].Digest = digest.Bytes([]byte("another go.sum"))
+	if r := Run(w.input(t)); r.Verdict != Failed || !strings.Contains(lines(r), "FAILED upstream/record covers the lockfiles") {
+		t.Errorf("stale record: %s\n%s", r.Verdict, lines(r))
+	}
+	w = newWorld()
+	w.inv.Upstream = record(upstream.Logged, "")
+	w.inv.Upstream.Results = nil
+	if r := Run(w.input(t)); r.Verdict != Failed {
+		t.Errorf("record missing a package: %s\n%s", r.Verdict, lines(r))
 	}
 }

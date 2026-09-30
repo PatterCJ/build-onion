@@ -7,7 +7,7 @@
 | You provide | You get |
 |---|---|
 | `build-onion.yml`: the builder image, lockfile, fetch and build commands, the files the build may read, and the outputs | Artifacts built with no network, from only the declared files and dependencies |
-| A lockfile for your dependencies | Every package inside the artifact proven against that lockfile |
+| A lockfile for your dependencies | Every package inside the artifact proven against that lockfile, and every locked package checked against its public registry and signed provenance |
 | A workflow that calls build-onion's three reusable workflows | A build reproduced byte for byte on separate runners before it's signed |
 | *Optional:* a policy, allowed fetch hosts, your own scan jobs | SLSA Build Level 3 provenance, an SBOM and an inventory, signed and attached to each artifact |
 | | Images published by digest, only after `onion peel` verifies them and a reviewer approves |
@@ -22,6 +22,7 @@ When `onion peel` passes, every statement below was checked:
 - The artifact's digest is signed by build-onion's security line, for the repository and commit it claims.
 - It was built from that commit's files, each one hashed, and the build could read only its declared inputs (`build.inputs`, or every tracked file when none are declared).
 - Its dependencies came only from the lockfile, fetched only from the allowed hosts, and every package found inside it is accounted for by the lockfile or by the pinned base image.
+- Every locked package that is on its public registry has the bytes that registry publishes (for Go, the bytes in the checksum log), and any provenance the registry serves for them verifies.
 - The build ran in a builder image pinned by digest, with no network; every workflow action was pinned to a commit, and the runner images and tool versions were recorded.
 - A second build on separate runners produced the same bytes before it was signed.
 - The release rules allowed it, and every recorded scan examined these exact bytes.
@@ -41,7 +42,7 @@ flowchart LR
   end
   subgraph V["Security line · onion-verify.yml"]
     direction TB
-    V1["Snapshot<br/>must match"] --> V2["Rebuild<br/>must match byte for byte"] --> V3["SBOM<br/>of what was built"] --> V4["Seal<br/>sign provenance, SBOM, inventory"]
+    V1["Snapshot<br/>must match"] --> V2["Rebuild<br/>must match byte for byte"] --> V3["SBOM<br/>of what was built"] --> V5["Upstream<br/>locked bytes match the registries"] --> V4["Seal<br/>sign provenance, SBOM, inventory"]
   end
   subgraph P["Publish line · onion-publish.yml"]
     direction TB
@@ -68,7 +69,8 @@ Each line builds its own `onion` CLI from the build-onion commit it runs at.
 | **Fetch** | Dependencies are fetched in their own step and checked against the lockfile. With `dependencies.egress`, the only route out is a proxy that allows the listed hosts, and every connection is recorded. |
 | **Build** | Runs in the pinned builder with no network, reading only the staged inputs and the fetched dependencies. |
 | **Rebuild** | The security line repeats fetch and build on its own runners; sealing requires identical bytes. |
-| **Seal** | Signs SLSA v1 provenance, a CycloneDX SBOM of the built artifact, and the inventory: source, inputs, dependencies, pipeline, gate, fetch connections, rebuild and scans. |
+| **Upstream** | Every locked package is checked against its public registry: Go against the checksum log, npm and Python against the registry's files and their signed provenance, Rust against the crates.io index. |
+| **Seal** | Signs SLSA v1 provenance, a CycloneDX SBOM of the built artifact, and the inventory: source, inputs, dependencies, upstream checks, pipeline, gate, fetch connections, rebuild and scans. |
 
 ### SLSA Build Level 3
 
@@ -94,7 +96,7 @@ $ onion peel ghcr.io/acme/widget@sha256:… --repo acme/widget --ref 'refs/heads
 | `--ref REFS` | Require the source ref to match one of these globs. |
 | `--source DIR` | Also check a local checkout against the signed snapshot. |
 | `--rebuild` | Also rebuild locally from `--source` and compare (needs Docker). |
-| `--packages` | List every package found in the artifact and its outcome. |
+| `--packages` | List every package found in the artifact, its outcome, and its upstream outcome. |
 | `--bundles DIR` | Verify offline from saved bundles instead of the GitHub attestations API. |
 | `--json` | Print the full report as JSON. |
 | `--allow-degraded` | Exit 0 when the only problems are coverage gaps. |
@@ -114,6 +116,7 @@ Set `GITHUB_TOKEN` when verifying often: unauthenticated GitHub API requests are
 | **pipeline** | The build-onion commit, every action pinned, and each job's runner and tools recorded. |
 | **scans** | Each recorded scan examined this build and completed. |
 | **dependencies** | Every package inside the artifact is accounted for: declared in the lockfile at the same version (and the same content hash where both carry one), from the pinned base image's layers, or bundled inside a declared package. |
+| **upstream** | Every locked package's bytes are what its public registry publishes, and its provenance, where published, verifies. Private packages are listed as notes. |
 | **source** | *With `--source`:* every file in the checkout matches the signed snapshot. |
 | **rebuild** | *With `--rebuild`:* a local rebuild produces the same bytes. |
 
@@ -139,7 +142,7 @@ NOTE lines give context without affecting the verdict.
 
 ## The `onion` CLI
 
-The CLI takes everything as flags and has no dependency on GitHub; the reusable workflows supply events, refs and Sigstore signing. Its commands (`validate`, `source`, `gate`, `fetch`, `build`, `compare`, `record`, `inventory`, `peel`) can be driven from any CI system.
+The CLI takes everything as flags and has no dependency on GitHub; the reusable workflows supply events, refs and Sigstore signing. Its commands (`validate`, `source`, `gate`, `fetch`, `build`, `compare`, `upstream`, `record`, `inventory`, `peel`) can be driven from any CI system.
 
 ## Development
 

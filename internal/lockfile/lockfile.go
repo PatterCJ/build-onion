@@ -8,6 +8,8 @@
 package lockfile
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"path"
 	"regexp"
@@ -25,6 +27,10 @@ type Package struct {
 	// Lockfile hashes of downloaded archives, which can't be compared with
 	// installed files, are not recorded here.
 	Hash string `json:"hash,omitempty"`
+	// Archives are the digests (sha512:hex, sha256:hex) of the registry
+	// archives the lockfile allows for this version: npm's integrity, the
+	// wheels and sdists of a hash-pinned Python lock, a crate's checksum.
+	Archives []string `json:"archives,omitempty"`
 	// Dev marks development-only dependencies, expected not to ship.
 	Dev bool `json:"dev,omitempty"`
 }
@@ -124,4 +130,40 @@ func Normalize(ecosystem, name string) string {
 		return strings.ToLower(name)
 	}
 	return name
+}
+
+// archiveDigest normalizes a lockfile hash (sha256:hex, sha256=hex, or bare
+// hex with a default algorithm) to alg:hex.
+func archiveDigest(h, defaultAlg string) (string, error) {
+	alg, val := defaultAlg, h
+	if i := strings.IndexAny(h, ":="); i >= 0 {
+		alg, val = strings.ToLower(h[:i]), h[i+1:]
+	}
+	val = strings.ToLower(val)
+	if _, err := hex.DecodeString(val); err != nil || alg == "" {
+		return "", fmt.Errorf("unrecognized hash %q", h)
+	}
+	return alg + ":" + val, nil
+}
+
+// SRIDigests converts a Subresource Integrity string (npm's "integrity") to
+// alg:hex digests, strongest first.
+func SRIDigests(sri string) ([]string, error) {
+	var out []string
+	for _, f := range strings.Fields(sri) {
+		alg, b64, ok := strings.Cut(f, "-")
+		if !ok {
+			return nil, fmt.Errorf("unrecognized integrity %q", f)
+		}
+		if i := strings.IndexByte(b64, '?'); i >= 0 {
+			b64 = b64[:i]
+		}
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return nil, fmt.Errorf("integrity %q: %w", f, err)
+		}
+		out = append(out, strings.ToLower(alg)+":"+hex.EncodeToString(raw))
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i] > out[j] }) // sha512 > sha384 > sha256 > sha1
+	return out, nil
 }
