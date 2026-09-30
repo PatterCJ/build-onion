@@ -78,7 +78,7 @@ $ onion peel ghcr.io/pattercj/build-onion@sha256:… --repo PatterCJ/build-onion
 | Layer | Checks |
 |---|---|
 | **seal** | Every Sigstore bundle verifies. The signer is the security line, the certificate's repo and commit match the claim, and one run signed provenance, SBOM and inventory. |
-| **provenance** | SLSA v1, the builder is build-onion, a hosted runner, and the repo and commit match. |
+| **provenance** | SLSA v1, the builder is build-onion, a hosted runner, and the repo and commit match. With `--ref`, the source ref must be one the verifier accepts. |
 | **inventory** | Same commit and run; the artifact is a declared output; the builder is pinned; the build had no network; inputs are locked. |
 | **gate** | The gate allowed release. Sensitive changes are shown as notes. |
 | **egress** | Fetch ran behind the allow-list, and every recorded connection was declared. |
@@ -103,7 +103,7 @@ Every check is graded, and the verdict is the worst grade present. Incomplete ev
 
 NOTE lines add context (a build-sensitive change, bundles from other signers) without grading the artifact, and optional checks you didn't ask for are listed as *not performed*. `--allow-degraded` lets a gate accept DEGRADED and UNSUPPORTED; the publish line doesn't use it. `--json` gives the full report to a deploy gate.
 
-Bundles come from the GitHub attestations API, or from `--bundles DIR` for offline and air-gapped verification. `--oci` verifies an image from its OCI tarball before it's pushed.
+Bundles come from the GitHub attestations API, or from `--bundles DIR` for offline and air-gapped verification. Set `GITHUB_TOKEN` when peeling often: unauthenticated API requests are limited to 60 an hour (5,000 with a token, and it's always present inside GitHub Actions). `--oci` verifies an image from its OCI tarball before it's pushed.
 
 ## Adopt it
 

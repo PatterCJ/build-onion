@@ -32,7 +32,7 @@ onion record scan \
   --out records/scan-sca.json
 ```
 
-Then upload the record as an artifact named `onion-record-<anything>` before the security line runs. It collects every `onion-record-*` artifact in the run. See `.github/workflows/release.yml` for a complete example that records `govulncheck`.
+Then upload the record as an artifact named `onion-record-scan-<name>` before the security line runs. The security line collects every `onion-record-scan-*` artifact, and accepts **only scan records** from them. Pipeline facts (jobs, workflows, the build-onion commit) come only from build-onion's own jobs, so a job in your workflow can't vouch for anything but its own scans. See `.github/workflows/release.yml` for a complete example that records `govulncheck`.
 
 Without the CLI, write the record directly:
 

@@ -179,6 +179,23 @@ func TestPipelineRecords(t *testing.T) {
 	if _, err := ReadPipeline(dir, "x"); err == nil {
 		t.Error("pipeline without builder commit accepted")
 	}
+	// The caller's directory may only hold scan records.
+	callerDir := t.TempDir()
+	must(WriteScanRecord(filepath.Join(callerDir, "scan.json"), Scan{Name: "sca", Tool: "t", Stage: StagePreBuild, Status: ScanCompleted,
+		StartedAt: "2026-09-29T20:00:00Z", FinishedAt: "2026-09-29T20:00:01Z", Subject: ScanSubject{Kind: "source", Digest: digest.Bytes([]byte("s"))}}))
+	if scans, err := ReadScans(callerDir); err != nil || len(scans) != 1 {
+		t.Fatalf("scans = %v, %v", scans, err)
+	}
+	must(WriteJobRecord(filepath.Join(callerDir, "job-forged.json"), Job{Name: "build", Runner: "claims to be build-onion"}))
+	if _, err := ReadScans(callerDir); err == nil || !strings.Contains(err.Error(), "only scan records") {
+		t.Errorf("forged job record from a caller accepted: %v", err)
+	}
+	os.Remove(filepath.Join(callerDir, "job-forged.json"))
+	must(WriteBuildOnionRecord(filepath.Join(callerDir, "onion.json"), BuildOnionRef{Commit: "c1"}))
+	if _, err := ReadScans(callerDir); err == nil {
+		t.Error("forged build-onion record from a caller accepted")
+	}
+
 	// Unknown shapes are rejected, not ignored.
 	os.WriteFile(filepath.Join(dir, "bad.json"), []byte(`{"kind":"job","extra":1}`), 0o644)
 	if _, err := ReadPipeline(dir, "x"); err == nil {

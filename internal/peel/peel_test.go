@@ -200,6 +200,10 @@ func TestPeelGrades(t *testing.T) {
 			world: func(w *world) { w.cert.SourceRepositoryURI = "https://github.com/evil/widget" },
 			want:  "FINDING seal/inventory signed for claimed repo", verdict: Finding,
 		},
+		"built from a ref the verifier doesn't accept": {
+			input: func(in *Input) { in.Refs = []string{"refs/tags/v*"} },
+			want:  "FINDING provenance/source ref accepted", verdict: Finding,
+		},
 		"self-hosted runner": {
 			world: func(w *world) {
 				w.prov["buildDefinition"].(map[string]any)["internalParameters"] = map[string]any{"github": map[string]any{"runner_environment": "self-hosted"}}
@@ -377,6 +381,18 @@ func TestPeelGrades(t *testing.T) {
 				t.Fatalf("verdict %s, want %s:\n%s", r.Verdict, tc.verdict, strings.Join(graded(r), "\n"))
 			}
 		})
+	}
+}
+
+func TestAcceptedRefs(t *testing.T) {
+	in := newWorld().input(t)
+	in.Refs = []string{"refs/heads/main", "refs/tags/v*"}
+	if r := Run(in); r.Verdict != Passed || !strings.Contains(lines(r), "PASSED provenance/source ref accepted: built from refs/heads/main") {
+		t.Fatalf("verdict %s:\n%s", r.Verdict, lines(r))
+	}
+	in.Refs = nil
+	if r := Run(in); !strings.Contains(lines(r), "NOTE provenance/source ref: built from refs/heads/main") {
+		t.Fatalf("unconstrained ref not noted:\n%s", lines(r))
 	}
 }
 

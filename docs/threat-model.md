@@ -39,6 +39,9 @@ build-onion is a claim about **where an artifact came from**. This page says pre
 | A file swapped only while the compiler reads it, then restored | The security line rebuilds from the same hashed inputs on its own runners and seals only if its bytes match the build line's. |
 | The build approving its own output | The build line has no signing rights. Only the security line seals, and only after its own rebuild matches; the publish line can't sign and releases only what `peel` verifies. |
 | A crafted build output exploiting the SBOM generator | The SBOM generator runs in its own job with no signing rights. The signing job only hashes outputs with build-onion's own code, checks that the SBOMs describe exactly those bytes, and never runs a third-party parser over build output. An exploit could corrupt an SBOM, but not sign anything. |
+| A calling workflow claiming a build is releasable (a branch passing `releasable: true`, or faking the build line's gate verdict) | The seal job re-runs the gate itself from the run's own event and ref, which the calling workflow can't change, and records that verdict. It refuses to seal if the verdict is no. |
+| A job in the same run forging pipeline records | build-onion's own records are collected by exact artifact name. Records from other jobs (`onion-record-scan-*`) may only be scan records. A job that squats one of build-onion's names makes the real upload, and the run, fail. |
+| A verifier accepting builds from refs they don't release from | `peel --ref 'refs/heads/main,refs/tags/v*'` checks the ref recorded in the provenance, which comes from GitHub's signing identity rather than the repository's own policy. |
 | A scan report from another build attached to this one | Scan records must name this build's source snapshot or one of its output digests, or the security line refuses to seal. |
 | Build is not what the manifest says it is | **rebuild** layer replays the manifest and compares bytes. |
 
@@ -51,6 +54,8 @@ build-onion is a claim about **where an artifact came from**. This page says pre
 - **Malicious code at the commit.** If the commit itself contains a backdoor, build-onion faithfully proves the backdoor was built from that commit. Provenance is not code review — pair it with review and scanning.
 - **A compromised dependency that *is* in the lockfile.** Lockfiles pin bytes, not intent. The fetch step runs `go mod verify` against `go.sum`, but a malicious version you locked is still malicious.
 - **Compromised GitHub, Sigstore, or build-onion itself.** These are the trust root. Pin build-onion by commit and review updates.
+- **A calling workflow disrupting a run.** A job in the same run can upload an artifact under one of build-onion's names first, making the real job fail. That is a denial of service, not a way past the checks: the run fails rather than sealing anything.
+- **A repository policy that allows its own branches.** A policy file in the repo is only as protected as the branches that can change it. For a guarantee that doesn't depend on the repo, verifiers should pass `peel --ref`, and platform teams should pin policy centrally (see [policy.md](policy.md)).
 - **Content hashes outside Go.** For npm and Python, lockfiles hash downloaded archives while artifacts hold installed files, so matching is by name and version. The archives themselves were verified against the lockfile hashes during the restricted fetch.
 - **Ecosystems without a parser** (Maven, Yarn, pnpm, and others) grade UNSUPPORTED. Their lockfiles are still hashed into the inventory.
 - **Private repositories.** GitHub signs attestations for private repos with its own Sigstore instance; pass that trust root with `peel --trusted-root`.

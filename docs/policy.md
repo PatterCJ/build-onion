@@ -46,6 +46,7 @@ jobs:
     with:
       snapshot: ${{ needs.build.outputs.snapshot }}
       releasable: ${{ needs.build.outputs.releasable }}
+      policy: .build-onion/policy.yml     # the security line re-runs the gate itself
       runs-on: acme-isolated-verifiers   # separate infrastructure for the rebuild
 ```
 

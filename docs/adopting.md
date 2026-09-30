@@ -157,5 +157,8 @@ onion peel dist/widget --repo acme/widget --signer-ref refs/tags/v0.1.0
 `peel` exits 0 only when every check passed: 3 for degraded or unsupported coverage, 4 for a finding, 5 when evidence couldn't be produced. `--allow-degraded` accepts incomplete coverage, and `--json` gives a machine-readable report. Typical gate:
 
 ```sh
-onion peel "$IMAGE" --repo acme/widget --commit "$EXPECTED_SHA" --json > peel.json
+onion peel "$IMAGE" --repo acme/widget --commit "$EXPECTED_SHA" \
+  --ref 'refs/heads/main,refs/tags/v*' --json > peel.json
 ```
+
+`--ref` makes the deploy gate decide which refs it releases from, independent of any policy file in the repository. Set `GITHUB_TOKEN` in the environment to avoid the GitHub API's 60-requests-per-hour unauthenticated limit, or pass `--bundles` to verify offline.

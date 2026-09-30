@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -136,6 +137,10 @@ type Input struct {
 	Candidates []attest.Candidate
 	SourceDir  string // optional local checkout for the source layer
 	Rebuild    bool   // re-run the build from SourceDir and compare digests
+	// Refs, if set, are the refs (globs) the verifier accepts. They're checked
+	// against the provenance, whose ref comes from GitHub's signing identity,
+	// independent of any policy the repository itself declares.
+	Refs []string
 }
 
 // Run peels every layer and returns the graded report. It never stops early:
@@ -207,6 +212,13 @@ func Run(in Input) *Report {
 			"runner_environment %q (SLSA L3 requires a hosted build platform)", bd.InternalParameters.GitHub.RunnerEnvironment)
 		r.check("provenance", "source repository", bd.ExternalParameters.Workflow.Repository == repoURL, Finding,
 			"workflow repository %s", bd.ExternalParameters.Workflow.Repository)
+		ref := bd.ExternalParameters.Workflow.Ref
+		if len(in.Refs) == 0 {
+			r.grade("provenance", "source ref", Note, "built from %s (pass --ref to require specific refs)", ref)
+		} else {
+			r.check("provenance", "source ref accepted", refMatches(in.Refs, ref), Finding,
+				"built from %s; accepted: %s", ref, strings.Join(in.Refs, ", "))
+		}
 		commit := prov.sourceCommit(repoURL)
 		r.check("provenance", "source commit recorded", commit != "", Failed, "resolvedDependencies gitCommit %q", commit)
 		if in.Claim.Commit != "" {
@@ -542,6 +554,15 @@ func declaredFrom(inv *inventory.Inventory) ([]lockfile.Package, []lockfile.Loca
 		local = append(local, lockfile.Local{Ecosystem: "golang", Name: m})
 	}
 	return declared, local
+}
+
+func refMatches(patterns []string, ref string) bool {
+	for _, p := range patterns {
+		if ok, _ := path.Match(p, ref); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func hasPrefix(all, prefix []string) bool {

@@ -52,7 +52,7 @@ Usage:
   onion compare   --staged DIR --rebuilt DIR [--out FILE]
   onion digest    [--oci] PATH...
   onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
-  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
+  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
   onion version
 `
 
@@ -283,7 +283,8 @@ func cmdInventory(args []string) error {
 	fs.StringVar(&p.InvocationURL, "invocation", "", "URL of the run that built this")
 	snapPath := fs.String("snapshot", "", "source snapshot taken before the build (required)")
 	expect := fs.String("expect-snapshot", "", "require the snapshot to have this digest")
-	records := fs.String("records", "", "directory of `onion record` files (required)")
+	records := fs.String("records", "", "directory of build-onion's own `onion record` files (required)")
+	scanRecords := fs.String("scan-records", "", "directory of scan records from the pipeline's own jobs (scan records only)")
 	platform := fs.String("platform", "local", "CI platform name")
 	gatePath := fs.String("gate", "", "gate verdict JSON from `onion gate`")
 	rebuildPath := fs.String("rebuild", "", "comparison JSON from `onion compare`")
@@ -298,6 +299,13 @@ func cmdInventory(args []string) error {
 	}
 	if p.Pipeline, err = inventory.ReadPipeline(*records, *platform); err != nil {
 		return err
+	}
+	if *scanRecords != "" {
+		scans, err := inventory.ReadScans(*scanRecords)
+		if err != nil {
+			return err
+		}
+		p.Pipeline.Scans = append(p.Pipeline.Scans, scans...)
 	}
 	if *gatePath != "" {
 		p.Gate = new(gate.Verdict)
@@ -340,6 +348,7 @@ func cmdPeel(args []string) error {
 	asJSON := fs.Bool("json", false, "print the report as JSON")
 	allowDegraded := fs.Bool("allow-degraded", false, "exit 0 when the verdict is DEGRADED or UNSUPPORTED")
 	packages := fs.Bool("packages", false, "list every package found in the artifact and its outcome")
+	refs := fs.String("ref", "", "comma-separated refs the artifact must have been built from, e.g. 'refs/heads/main,refs/tags/v*'")
 	oci := fs.Bool("oci", false, "ARTIFACT is an OCI image-layout tarball; verify its image digest")
 	artifact, rest := splitPositional(args)
 	fs.Parse(rest)
@@ -386,6 +395,7 @@ func cmdPeel(args []string) error {
 		Candidates: cands,
 		SourceDir:  *source,
 		Rebuild:    *rebuild,
+		Refs:       splitList(*refs),
 	})
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -403,6 +413,16 @@ func cmdPeel(args []string) error {
 		return exitCode(code)
 	}
 	return nil
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // splitPositional lets the artifact come before or after the flags.

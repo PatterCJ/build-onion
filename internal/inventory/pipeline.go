@@ -180,6 +180,38 @@ func writeRecord(p string, r record) error {
 	return os.WriteFile(p, b, 0o644)
 }
 
+// ReadScans reads caller-supplied records. Only scan records are accepted:
+// the caller's own jobs may say which tools they ran, but pipeline facts
+// (jobs, workflows, the build-onion commit) come only from build-onion.
+func ReadScans(dir string) ([]Scan, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	var out []Scan
+	for _, p := range paths {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		var r record
+		dec := json.NewDecoder(strings.NewReader(string(raw)))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&r); err != nil {
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+		if r.Kind != "scan" || r.Scan == nil {
+			return nil, fmt.Errorf("%s: a %q record from outside build-onion's own jobs; only scan records are accepted there", p, r.Kind)
+		}
+		if err := r.Scan.Validate(); err != nil {
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+		out = append(out, *r.Scan)
+	}
+	return out, nil
+}
+
 // ReadPipeline merges every *.json record under dir.
 func ReadPipeline(dir, platform string) (Pipeline, error) {
 	pl := Pipeline{Platform: platform}
