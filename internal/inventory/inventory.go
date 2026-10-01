@@ -384,6 +384,10 @@ func CheckChain(inv *Inventory, links []chain.Link) error {
 	if err := chain.Verify(links, expected, inv.Source.Snapshot); err != nil {
 		return err
 	}
+	// The records are of the run being sealed.
+	if inv.Run.InvocationURL != "" && links[0].Run != inv.Run.InvocationURL {
+		return fmt.Errorf("the phase records are from run %q, but this inventory seals %q", links[0].Run, inv.Run.InvocationURL)
+	}
 	var build, image *chain.Link
 	for i := range links {
 		switch links[i].Step {

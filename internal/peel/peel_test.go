@@ -940,14 +940,14 @@ func TestSinglePipelineGrades(t *testing.T) {
 	snap := digest.Bytes([]byte("snapshot"))
 	w.inv.Source.Snapshot = snap
 	w.inv.Verification = nil
-	s := chain.Link{Step: chain.StepSnapshot, Run: "r1", Snapshot: snap, Products: []chain.Resource{{Name: "source-snapshot", Digest: snap}}}
-	b, _ := chain.Next(s, chain.StepBuild, "r1", snap)
+	s := chain.Link{Step: chain.StepSnapshot, Run: runURL, Snapshot: snap, Products: []chain.Resource{{Name: "source-snapshot", Digest: snap}}}
+	b, _ := chain.Next(s, chain.StepBuild, runURL, snap)
 	b.Materials = []chain.Resource{{Name: "source-snapshot", Digest: snap}}
 	b.Products = []chain.Resource{{Name: "file widget", Digest: artifactDigest}}
 	w.inv.Chain = []chain.Link{s, b}
 	r := Run(w.input(t))
 	for _, want := range []string{
-		"PASSED verification/phase records: snapshot → build: every hand-off matched, run r1",
+		"PASSED verification/phase records: snapshot → build: every hand-off matched, run " + runURL,
 		"DEGRADED verification/independent rebuild: not performed: a single-pipeline build",
 		"only a rebuild on separate infrastructure detects that",
 	} {

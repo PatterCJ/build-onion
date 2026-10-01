@@ -109,6 +109,12 @@ func TestLinkImage(t *testing.T) {
 	if err := cmdLinkImage(args); err == nil || !strings.Contains(err.Error(), "from run") {
 		t.Errorf("other run: %v", err)
 	}
+	// A record that isn't a regular file.
+	os.Symlink(buildLink, filepath.Join(dir, "links", "link.json"))
+	if _, err := readLinks(filepath.Join(dir, "links")); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("symlinked record accepted: %v", err)
+	}
+	os.Remove(filepath.Join(dir, "links", "link.json"))
 	// Two records for one step.
 	chain.Write(filepath.Join(dir, "links", "build2.json"), b)
 	if _, err := readLinks(filepath.Join(dir, "links")); err == nil {

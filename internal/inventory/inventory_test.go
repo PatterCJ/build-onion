@@ -469,6 +469,16 @@ func TestGenerateChain(t *testing.T) {
 	if err != nil || len(inv.Chain) != 3 {
 		t.Fatalf("consistent chain: %v", err)
 	}
+	// Records from another run than the one being sealed.
+	p.InvocationURL = "https://ci.example/runs/2"
+	if _, _, err := Generate(p); err == nil || !strings.Contains(err.Error(), "from run") {
+		t.Errorf("records from another run accepted: %v", err)
+	}
+	p.InvocationURL = "r1"
+	if _, _, err := Generate(p); err != nil {
+		t.Errorf("records from the sealed run: %v", err)
+	}
+	p.InvocationURL = ""
 	// The recorded output isn't the file being sealed.
 	p.Chain = links("another binary")
 	if _, _, err := Generate(p); err == nil || !strings.Contains(err.Error(), "the build record says") {

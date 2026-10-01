@@ -19,7 +19,7 @@ type linkFlags struct{ in, out, run string }
 func (l *linkFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&l.in, "link-in", "", "the previous phase's record; its products must be this phase's inputs")
 	fs.StringVar(&l.out, "link-out", "", "write this phase's record here (single-pipeline builds)")
-	fs.StringVar(&l.run, "run", "", "the CI run, shared by every phase record (with --link-out)")
+	fs.StringVar(&l.run, "run", "", "the CI run, shared by every phase record; use the run URL given to 'onion inventory --invocation'")
 }
 
 // start returns the new record for step, checked against the previous one.
@@ -155,8 +155,13 @@ func readLinks(dir string) ([]chain.Link, error) {
 	var links []chain.Link
 	seen := map[string]bool{}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
+		}
+		// Only regular files: a symlink or named pipe could point a read
+		// somewhere else or block it.
+		if !e.Type().IsRegular() {
+			return nil, fmt.Errorf("%s: %s is not a regular file", dir, e.Name())
 		}
 		l, err := chain.Read(filepath.Join(dir, e.Name()))
 		if err != nil {
