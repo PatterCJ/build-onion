@@ -21,6 +21,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
+	sigs "github.com/PatterCJ/build-onion/internal/signer"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/trust"
 	"github.com/PatterCJ/build-onion/internal/upstream"
@@ -997,5 +998,82 @@ func TestSinglePipelineGrades(t *testing.T) {
 	w.inv.Chain[1].Products[0].Digest = digest.Bytes([]byte("other"))
 	if r := Run(w.input(t)); r.Verdict != Finding || !strings.Contains(lines(r), "FINDING verification/phase records") {
 		t.Errorf("tampered chain: %s\n%s", r.Verdict, lines(r))
+	}
+}
+
+// A GitLab pipeline sealed with a trusted key: its provenance names the
+// project, ref and pipeline, and the inventory must agree.
+func TestGitLabKeySealed(t *testing.T) {
+	const project = "https://gitlab.com/acme/widget"
+	const pipeline = project + "/-/pipelines/9"
+	vars := map[string]string{
+		"CI_SERVER_URL": "https://gitlab.com", "CI_PROJECT_URL": project, "CI_PROJECT_PATH": "acme/widget",
+		"CI_PROJECT_ID": "7", "CI_COMMIT_SHA": commit, "CI_COMMIT_TAG": "v1.0.0", "CI_COMMIT_REF_PROTECTED": "true",
+		"CI_PIPELINE_URL": pipeline, "CI_PIPELINE_SOURCE": "push", "CI_CONFIG_PATH": ".gitlab-ci.yml",
+		"CI_JOB_URL": project + "/-/jobs/1", "CI_RUNNER_ID": "5", "CI_RUNNER_DESCRIPTION": "saas-linux-small-amd64",
+	}
+	mk := func(change map[string]string) *world {
+		env := map[string]string{}
+		for k, v := range vars {
+			env[k] = v
+		}
+		for k, v := range change {
+			env[k] = v
+		}
+		raw, err := sigs.GitLabProvenance(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := newWorld()
+		w.key = "acme-kms-release"
+		w.prov = map[string]any{}
+		json.Unmarshal(raw, &w.prov)
+		w.inv.Source.Repository = project
+		w.inv.Run.InvocationURL = pipeline
+		w.inv.Pipeline.Platform = "gitlab-ci"
+		return w
+	}
+	claim := func(w *world) Input {
+		in := w.input(t)
+		in.Claim.Repository = "gitlab.com/acme/widget"
+		return in
+	}
+
+	r := Run(claim(mk(nil)))
+	for _, want := range []string{
+		"PASSED provenance/build type: " + sigs.GitLabBuildType,
+		"PASSED provenance/protected ref: refs/tags/v1.0.0",
+		"NOTE provenance/pipeline definition: .gitlab-ci.yml",
+		"PASSED provenance/source repository",
+		"PASSED provenance/source commit matches claim",
+		"PASSED inventory/claimed repository",
+		"PASSED inventory/same run",
+	} {
+		if !strings.Contains(lines(r), want) {
+			t.Errorf("missing %q:\n%s", want, lines(r))
+		}
+	}
+	if r.Verdict != Passed {
+		t.Errorf("verdict %s: %v", r.Verdict, graded(r))
+	}
+
+	// Sealed from a ref anyone who can push may create.
+	if r := Run(claim(mk(map[string]string{"CI_COMMIT_REF_PROTECTED": "false"}))); r.Verdict != Finding {
+		t.Errorf("unprotected ref: %s", r.Verdict)
+	}
+	// Provenance of another pipeline than the inventory's: the records of
+	// two runs are never combined.
+	if r := Run(claim(mk(map[string]string{"CI_PIPELINE_URL": project + "/-/pipelines/10"}))); r.Verdict != Failed || !strings.Contains(lines(r), "NOTE seal/other sealing runs") {
+		t.Errorf("another pipeline's provenance: %s\n%s", r.Verdict, lines(r))
+	}
+	// Provenance of another project.
+	if r := Run(claim(mk(map[string]string{"CI_PROJECT_URL": "https://gitlab.com/evil/widget"}))); !strings.Contains(lines(r), "FINDING provenance/source repository") {
+		t.Errorf("another project's provenance:\n%s", lines(r))
+	}
+	// GitLab provenance with a certificate: nothing vouches for it.
+	w := mk(nil)
+	w.key = ""
+	if r := Run(claim(w)); !strings.Contains(lines(r), "UNSUPPORTED provenance/build type") || r.Verdict == Passed {
+		t.Errorf("certificate-signed GitLab provenance: %s\n%s", r.Verdict, lines(r))
 	}
 }

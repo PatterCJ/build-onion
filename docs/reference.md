@@ -408,7 +408,7 @@ onion attest --subject-checksums files.sha256 --provenance github --out provenan
 | `--subject NAME@sha256:HEX` | | A subject; repeatable. |
 | `--subject-checksums FILE` | | Subjects from `sha256sum` output. |
 | `--predicate FILE`, `--predicate-type URI` | | The predicate to sign. |
-| `--provenance github` | | Generate SLSA v1 provenance for the current GitHub Actions job instead, in the same form as GitHub's own. |
+| `--provenance CI` | | Generate SLSA v1 provenance for the current job instead of `--predicate`. `github`: the GitHub Actions job, in the same form as GitHub's own. `gitlab`: the GitLab CI pipeline, from its predefined variables (project, ref, commit, pipeline URL, whether the ref is protected, the pipeline definition's path); needs `--signer-command`. |
 | `--token SOURCE` | `github` | Where the OIDC token comes from: `github` (the job needs `id-token: write`), or `env:NAME` for a token another CI provides. |
 | `--fulcio URL`, `--rekor URL` | public-good Sigstore | Sigstore instances to use. |
 | `--trusted-root FILE` | *(public-good via TUF)* | Trusted root the new bundle is checked against before it is written. Required with a private `--fulcio` or `--rekor`. |

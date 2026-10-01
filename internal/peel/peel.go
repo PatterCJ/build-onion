@@ -31,6 +31,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/policy"
 	repoid "github.com/PatterCJ/build-onion/internal/repo"
+	sigs "github.com/PatterCJ/build-onion/internal/signer"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/tagsig"
 	"github.com/PatterCJ/build-onion/internal/trust"
@@ -280,15 +281,31 @@ func Run(in Input) *Report {
 		}
 	}
 
-	// provenance: SLSA v1 from GitHub, signed by the security line.
+	// provenance: SLSA v1 from GitHub, signed by the security line, or
+	// from a GitLab pipeline, signed by a trusted key.
 	var prov provenance
 	if v := verified[SLSAProvenanceV1]; v != nil && decode(r, "provenance", v.Statement.Predicate, &prov) {
 		bd, rd := prov.BuildDefinition, prov.RunDetails
-		r.check("provenance", "build type", bd.BuildType == GitHubBuildType, Unsupported, "%s", bd.BuildType)
-		builderPrefix := "https://github.com/" + in.Signer.SignerWorkflow + "@"
-		r.check("provenance", "builder is build-onion", strings.HasPrefix(rd.Builder.ID, builderPrefix), Finding, "builder.id %s", rd.Builder.ID)
-		r.check("provenance", "hosted runner", bd.InternalParameters.GitHub.RunnerEnvironment == "github-hosted", Finding,
-			"runner_environment %q (SLSA L3 requires a hosted build platform)", bd.InternalParameters.GitHub.RunnerEnvironment)
+		switch {
+		case bd.BuildType == GitHubBuildType:
+			r.grade("provenance", "build type", Passed, "%s", bd.BuildType)
+			builderPrefix := "https://github.com/" + in.Signer.SignerWorkflow + "@"
+			r.check("provenance", "builder is build-onion", strings.HasPrefix(rd.Builder.ID, builderPrefix), Finding, "builder.id %s", rd.Builder.ID)
+			r.check("provenance", "hosted runner", bd.InternalParameters.GitHub.RunnerEnvironment == "github-hosted", Finding,
+				"runner_environment %q (SLSA L3 requires a hosted build platform)", bd.InternalParameters.GitHub.RunnerEnvironment)
+		case bd.BuildType == sigs.GitLabBuildType && keySigned:
+			gl := bd.InternalParameters.GitLab
+			r.grade("provenance", "build type", Passed, "%s", bd.BuildType)
+			// Only protected refs should be able to reach the signing key.
+			r.check("provenance", "protected ref", gl.RefProtected == "true", Finding,
+				"%s (protected: %s)", bd.ExternalParameters.Workflow.Ref, orNone(gl.RefProtected))
+			r.grade("provenance", "pipeline definition", Note, "%s", bd.ExternalParameters.Workflow.Path)
+			r.grade("provenance", "runner", Note, "%s, as the sealing job reported it", orNone(gl.RunnerDescription))
+		case bd.BuildType == sigs.GitLabBuildType:
+			r.grade("provenance", "build type", Unsupported, "%s: GitLab provenance is accepted only from a trusted key", bd.BuildType)
+		default:
+			r.grade("provenance", "build type", Unsupported, "%s", bd.BuildType)
+		}
 		r.check("provenance", "source repository", strings.EqualFold(bd.ExternalParameters.Workflow.Repository, repoURL), Finding,
 			"workflow repository %s", bd.ExternalParameters.Workflow.Repository)
 		ref := bd.ExternalParameters.Workflow.Ref
@@ -388,6 +405,10 @@ type provenance struct {
 				EventName         string `json:"event_name"`
 				RunnerEnvironment string `json:"runner_environment"`
 			} `json:"github"`
+			GitLab struct {
+				RefProtected      string `json:"ref_protected"`
+				RunnerDescription string `json:"runner_description"`
+			} `json:"gitlab"`
 		} `json:"internalParameters"`
 		ResolvedDependencies []struct {
 			URI    string            `json:"uri"`
