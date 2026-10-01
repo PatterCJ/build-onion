@@ -5,6 +5,7 @@ package attest
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,8 @@ import (
 	"time"
 
 	"github.com/golang/snappy"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/sigstore/sigstore-go/pkg/root"
@@ -25,6 +28,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/PatterCJ/build-onion/internal/digest"
+	"github.com/PatterCJ/build-onion/internal/ocibundle"
 )
 
 // GitHubIssuer is the OIDC issuer for GitHub Actions workload identities.
@@ -312,4 +316,42 @@ func splitDigest(d string) (string, []byte, error) {
 		return "", nil, fmt.Errorf("invalid digest %q", d)
 	}
 	return alg, raw, nil
+}
+
+// FromRegistry returns the bundles stored in the registry as referrers of
+// the image at ref.
+func FromRegistry(ref name.Digest, opts ...remote.Option) ([]Candidate, error) {
+	raws, err := ocibundle.Fetch(ref, opts...)
+	if err != nil {
+		return nil, err
+	}
+	var out []Candidate
+	for i, raw := range raws {
+		var b bundle.Bundle
+		if err := b.UnmarshalJSON(raw); err != nil {
+			return nil, fmt.Errorf("registry bundle %d for %s: %w", i, ref, err)
+		}
+		out = append(out, Candidate{Bundle: &b, Source: fmt.Sprintf("registry %s [%d]", ref.Context(), i)})
+	}
+	return out, nil
+}
+
+// Dedupe drops candidates whose bundle is identical to an earlier one, as
+// when the same bundle is found in the registry and through GitHub's API.
+func Dedupe(cands []Candidate) []Candidate {
+	seen := map[[32]byte]bool{}
+	var out []Candidate
+	for _, c := range cands {
+		raw, err := c.Bundle.MarshalJSON()
+		if err != nil {
+			out = append(out, c)
+			continue
+		}
+		k := sha256.Sum256(raw)
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, c)
+		}
+	}
+	return out
 }

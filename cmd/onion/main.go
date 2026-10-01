@@ -57,8 +57,9 @@ Usage:
   onion upstream  [--source DIR] [--manifest FILE] [--snapshot FILE] [--out FILE] [-v]
   onion digest    [--oci] PATH...
   onion attest    (--subject NAME@sha256:HEX | --subject-checksums FILE) (--predicate FILE --predicate-type URI | --provenance github) --out FILE
+  onion push-bundles --image NAME@sha256:HEX --bundles DIR
   onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
-  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--baseline ARTIFACT] [--trust FILE] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
+  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--baseline ARTIFACT] [--trust FILE] [--attestations auto|github|registry] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
   onion trust     add --trust FILE --tag TAG [--repo OWNER/REPO]
   onion version
 `
@@ -69,21 +70,22 @@ func main() {
 		os.Exit(2)
 	}
 	cmds := map[string]func([]string) error{
-		"validate":  cmdValidate,
-		"source":    cmdSource,
-		"gate":      cmdGate,
-		"record":    cmdRecord,
-		"compare":   cmdCompare,
-		"upstream":  cmdUpstream,
-		"attest":    cmdAttest,
-		"trust":     cmdTrust,
-		"proxy":     cmdProxy,
-		"fetch":     cmdFetch,
-		"build":     cmdBuild,
-		"digest":    cmdDigest,
-		"inventory": cmdInventory,
-		"peel":      cmdPeel,
-		"version":   func([]string) error { fmt.Println(version); return nil },
+		"validate":     cmdValidate,
+		"source":       cmdSource,
+		"gate":         cmdGate,
+		"record":       cmdRecord,
+		"compare":      cmdCompare,
+		"upstream":     cmdUpstream,
+		"attest":       cmdAttest,
+		"push-bundles": cmdPushBundles,
+		"trust":        cmdTrust,
+		"proxy":        cmdProxy,
+		"fetch":        cmdFetch,
+		"build":        cmdBuild,
+		"digest":       cmdDigest,
+		"inventory":    cmdInventory,
+		"peel":         cmdPeel,
+		"version":      func([]string) error { fmt.Println(version); return nil },
 	}
 	cmd, ok := cmds[os.Args[1]]
 	if !ok {
@@ -407,6 +409,7 @@ func cmdPeel(args []string) error {
 	refs := fs.String("ref", "", "comma-separated refs the artifact must have been built from, e.g. 'refs/heads/main,refs/tags/v*'")
 	oci := fs.Bool("oci", false, "ARTIFACT is an OCI image-layout tarball; verify its image digest")
 	baseline := fs.String("baseline", "", "a previously sealed artifact (usually the last release) to compare with")
+	sources := fs.String("attestations", "auto", "where to find bundles: auto (the registry for images, plus GitHub), github, or registry")
 	trustPath := fs.String("trust", "", "trust file listing the build-onion releases allowed to have sealed the artifact")
 	baselineBundles := fs.String("baseline-bundles", "", "directory of the baseline's Sigstore bundles (default: GitHub attestations API)")
 	acceptSignerChanges := fs.Bool("accept-signer-changes", false, "with --baseline: report dependencies that lost provenance or changed signer as notes, not findings")
@@ -443,13 +446,18 @@ func cmdPeel(args []string) error {
 			return err
 		}
 	}
-	candidates := func(dir, d string) ([]attest.Candidate, error) {
+	switch *sources {
+	case "auto", "github", "registry":
+	default:
+		return fmt.Errorf("--attestations %q: want auto, github or registry", *sources)
+	}
+	candidates := func(dir, artifact, d string, isOCI bool) ([]attest.Candidate, error) {
 		if dir != "" {
 			return attest.FromDir(dir)
 		}
-		return attest.FromGitHub(context.Background(), *repo, d, os.Getenv("GITHUB_TOKEN"))
+		return findAttestations(*sources, *repo, artifact, d, isOCI)
 	}
-	cands, err := candidates(*bundles, d)
+	cands, err := candidates(*bundles, artifact, d, *oci)
 	if err != nil {
 		return err
 	}
@@ -473,7 +481,7 @@ func cmdPeel(args []string) error {
 		bd, err := resolveDigest(*baseline)
 		if err == nil {
 			var bc []attest.Candidate
-			if bc, err = candidates(*baselineBundles, bd); err == nil {
+			if bc, err = candidates(*baselineBundles, *baseline, bd, false); err == nil {
 				bin := in
 				bin.Artifact, bin.Digest, bin.Candidates = *baseline, bd, bc
 				bin.Claim.Commit, bin.SourceDir, bin.Rebuild = "", "", false
@@ -554,6 +562,60 @@ func resolveBaseLayers(ref string) ([]string, error) {
 
 // resolveDigest hashes a local file, or resolves an image reference to its
 // manifest digest (a tag is resolved once, then only the digest is trusted).
+// findAttestations collects bundles for an artifact from the registry (for
+// an image reference) and from GitHub's attestations API. In auto mode a
+// source that fails is reported and the others are used; a source that was
+// asked for by name must work.
+func findAttestations(mode, repo, artifact, d string, isOCI bool) ([]attest.Candidate, error) {
+	image, isImage := imageDigestRef(artifact, d, isOCI)
+	if mode == "registry" && !isImage {
+		return nil, fmt.Errorf("--attestations registry needs an image reference, not %s", artifact)
+	}
+	var out []attest.Candidate
+	var failures []error
+	used := 0
+	if mode == "auto" || mode == "github" {
+		c, err := attest.FromGitHub(context.Background(), repo, d, os.Getenv("GITHUB_TOKEN"))
+		if err != nil {
+			failures = append(failures, fmt.Errorf("GitHub attestations: %w", err))
+		} else {
+			out, used = append(out, c...), used+1
+		}
+	}
+	if (mode == "auto" || mode == "registry") && isImage {
+		c, err := attest.FromRegistry(image, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		if err != nil {
+			failures = append(failures, fmt.Errorf("registry attestations: %w", err))
+		} else {
+			out, used = append(out, c...), used+1
+		}
+	}
+	if used == 0 || (mode != "auto" && len(failures) > 0) {
+		return nil, errors.Join(failures...)
+	}
+	for _, f := range failures {
+		fmt.Fprintf(os.Stderr, "onion: %v (using the other sources)\n", f)
+		annotate("warning", "onion peel: attestation source unavailable", f.Error())
+	}
+	return attest.Dedupe(out), nil
+}
+
+// imageDigestRef is the artifact as repository@digest, when it names an
+// image in a registry rather than a local file or OCI tarball.
+func imageDigestRef(artifact, d string, isOCI bool) (name.Digest, bool) {
+	if isOCI {
+		return name.Digest{}, false
+	}
+	if st, err := os.Stat(artifact); err == nil && !st.IsDir() {
+		return name.Digest{}, false
+	}
+	ref, err := name.ParseReference(artifact, name.StrictValidation)
+	if err != nil {
+		return name.Digest{}, false
+	}
+	return ref.Context().Digest(d), true
+}
+
 func resolveDigest(artifact string) (string, error) {
 	if st, err := os.Stat(artifact); err == nil && !st.IsDir() {
 		return digest.File(artifact)

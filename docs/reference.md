@@ -253,7 +253,7 @@ Caller permissions: `contents: write` (release assets on tags), `packages: write
 |---|---|
 | `image` | Published image, pinned by digest (empty if none). |
 
-The image is pushed as `<name>:sha-<commit>`, and also as `<name>:<tag>` for tag pushes. On tags, the files and bundles are attached to the GitHub release.
+The image is pushed as `<name>:sha-<commit>`, and also as `<name>:<tag>` for tag pushes. Its bundles are stored in the registry next to it (OCI referrers), so `peel --attestations registry` needs only registry access. On tags, the files and bundles are also attached to the GitHub release.
 
 ## `onion` CLI
 
@@ -265,7 +265,7 @@ CGO_ENABLED=0 go build -trimpath -o onion ./cmd/onion
 
 Or run it from the published image: `docker run --rm ghcr.io/pattercj/build-onion:<tag> peel …`. On GitHub Actions, every block, finding and coverage gap is also raised as an annotation on the run's summary page. `GITHUB_TOKEN`, when set, authenticates GitHub API requests; the unauthenticated limit is 60 an hour.
 
-Commands you run yourself: [`peel`](#onion-peel), [`trust add`](#onion-trust-add), [`attest`](#onion-attest), [`validate`](#onion-validate), [`upstream`](#onion-upstream), [`record scan`](#onion-record), [`digest`](#onion-digest). The rest are the steps the reusable workflows run, and can drive the same pipeline from another CI system.
+Commands you run yourself: [`peel`](#onion-peel), [`trust add`](#onion-trust-add), [`attest`](#onion-attest), [`push-bundles`](#onion-push-bundles), [`validate`](#onion-validate), [`upstream`](#onion-upstream), [`record scan`](#onion-record), [`digest`](#onion-digest). The rest are the steps the reusable workflows run, and can drive the same pipeline from another CI system.
 
 ### Flags most commands share
 
@@ -298,7 +298,8 @@ onion peel ARTIFACT --repo OWNER/REPO [flags]
 | `--packages` | `false` | List every package in the artifact with its lockfile and upstream outcomes. |
 | `--json` | `false` | Print the full report as JSON. |
 | `--allow-degraded` | `false` | Exit 0 when the verdict is DEGRADED or UNSUPPORTED. |
-| `--bundles DIR` | | Read Sigstore bundles from this directory instead of the GitHub attestations API. |
+| `--attestations SOURCE` | `auto` | Where to find the bundles: `registry` (stored next to the image), `github` (GitHub's attestations API), or `auto` (both for an image; GitHub for a file). In `auto`, a source that can't be reached is reported and the other is used. |
+| `--bundles DIR` | | Read Sigstore bundles from this directory instead. |
 | `--baseline-bundles DIR` | | The same, for `--baseline`. |
 | `--signer OWNER/REPO/PATH` | `PatterCJ/build-onion/.github/workflows/onion-verify.yml` | The workflow allowed to sign. Change it if you call the workflows from a fork or wrapper. |
 | `--signer-ref REF` | *(any)* | Require an exact signer ref, e.g. `refs/tags/v0.1.0`. |
@@ -403,6 +404,16 @@ onion attest --subject-checksums files.sha256 --provenance github --out provenan
 | `--trusted-root FILE` | *(public-good via TUF)* | Trusted root the new bundle is checked against before it is written. Required with a private `--fulcio` or `--rekor`. |
 
 Before writing, `attest` verifies the new bundle for every subject with the same verifier and rules as `peel`, so it never writes a bundle `peel` would reject.
+
+### `onion push-bundles`
+
+Store the bundles about an image in its registry, as referrers of the image, in the layout Sigstore defines for bundles in OCI. Registries without the referrers API get the standard `sha256-<digest>` fallback tag. Bundles already there are skipped.
+
+```sh
+onion push-bundles --image ghcr.io/acme/widget@sha256:… --bundles DIR
+```
+
+Only bundles whose statement names the image's digest are pushed. Credentials come from the Docker config, as for `docker push`.
 
 ### `onion digest`
 

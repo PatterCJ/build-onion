@@ -181,6 +181,15 @@ jobs:
           fi
           echo "image=$name@$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
           echo "Published \`$name@$IMAGE_DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
+      # Store the sealed bundles in the registry next to the image, so any
+      # verifier finds them with the image, without GitHub's API. New: a
+      # failure is reported, not fatal, while it is compared with the API.
+      - name: Store the bundles next to the image
+        if: steps.push.outputs.image != ''
+        continue-on-error: true
+        env:
+          IMAGE: ${{ steps.push.outputs.image }}
+        run: '"$ONION" push-bundles --image "$IMAGE" --bundles "$BUNDLES"'
       - name: Attach files and bundles to the release
         if: startsWith(github.ref, 'refs/tags/')
         env:
