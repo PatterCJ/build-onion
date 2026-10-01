@@ -400,6 +400,9 @@ onion attest --subject-checksums files.sha256 --provenance github --out provenan
 | `--provenance github` | | Generate SLSA v1 provenance for the current GitHub Actions job instead, in the same form as GitHub's own. |
 | `--token SOURCE` | `github` | Where the OIDC token comes from: `github` (the job needs `id-token: write`), or `env:NAME` for a token another CI provides. |
 | `--fulcio URL`, `--rekor URL` | public-good Sigstore | Sigstore instances to use. |
+| `--trusted-root FILE` | *(public-good via TUF)* | Trusted root the new bundle is checked against before it is written. Required with a private `--fulcio` or `--rekor`. |
+
+Before writing, `attest` verifies the new bundle for every subject with the same verifier and rules as `peel`, so it never writes a bundle `peel` would reject.
 
 ### `onion digest`
 

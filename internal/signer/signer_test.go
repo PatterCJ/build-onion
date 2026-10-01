@@ -12,6 +12,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"reflect"
@@ -192,5 +194,41 @@ func TestKeylessSign(t *testing.T) {
 	k.Token = func(context.Context) (string, error) { return "", os.ErrNotExist }
 	if _, err := k.Sign(context.Background(), st); err == nil {
 		t.Error("signed without a token")
+	}
+}
+
+// The token is requested from GitHub's endpoint with audience "sigstore",
+// keeping the query GitHub's URL already has.
+func TestGitHubToken(t *testing.T) {
+	var gotQuery url.Values
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery, gotAuth = r.URL.Query(), r.Header.Get("Authorization")
+		if gotAuth != "Bearer req-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Write([]byte(`{"value":"the.oidc.token"}`))
+	}))
+	defer srv.Close()
+	env := map[string]string{"ACTIONS_ID_TOKEN_REQUEST_URL": srv.URL + "/token?api-version=2.0", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "req-token"}
+	old := getenv
+	getenv = func(k string) string { return env[k] }
+	defer func() { getenv = old }()
+
+	tok, err := GitHubToken(context.Background())
+	if err != nil || tok != "the.oidc.token" {
+		t.Fatalf("token %q, %v", tok, err)
+	}
+	if gotQuery.Get("audience") != "sigstore" || gotQuery.Get("api-version") != "2.0" {
+		t.Errorf("query = %v", gotQuery)
+	}
+	env["ACTIONS_ID_TOKEN_REQUEST_TOKEN"] = "wrong"
+	if _, err := GitHubToken(context.Background()); err == nil {
+		t.Error("rejected request accepted")
+	}
+	delete(env, "ACTIONS_ID_TOKEN_REQUEST_URL")
+	if _, err := GitHubToken(context.Background()); err == nil || !strings.Contains(err.Error(), "id-token: write") {
+		t.Errorf("missing token endpoint: %v", err)
 	}
 }

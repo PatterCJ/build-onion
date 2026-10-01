@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sigstore/sigstore-go/pkg/bundle"
+
+	"github.com/PatterCJ/build-onion/internal/attest"
 	"github.com/PatterCJ/build-onion/internal/signer"
 )
 
@@ -27,9 +30,13 @@ func cmdAttest(args []string) error {
 	token := fs.String("token", "github", "where the OIDC token comes from: github, or env:NAME")
 	fulcio := fs.String("fulcio", signer.PublicFulcio, "Fulcio URL")
 	rekor := fs.String("rekor", signer.PublicRekor, "Rekor URL")
+	trustedRoot := fs.String("trusted-root", "", "Sigstore trusted_root.json to check the new bundle against (default: public-good via TUF; required with --fulcio or --rekor)")
 	fs.Parse(args)
 	if *out == "" {
 		return errors.New("--out is required")
+	}
+	if (*fulcio != signer.PublicFulcio || *rekor != signer.PublicRekor) && *trustedRoot == "" {
+		return errors.New("with a private --fulcio or --rekor, pass --trusted-root so the bundle can be checked")
 	}
 
 	var subjects []signer.Subject
@@ -102,10 +109,33 @@ func cmdAttest(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Never write a bundle peel wouldn't accept: check it now, with peel's
+	// own verifier and rules, for every subject.
+	v, err := attest.NewAnyIdentityVerifier(*trustedRoot)
+	if err != nil {
+		return err
+	}
+	if err := checkBundle(v, b, subjects); err != nil {
+		return fmt.Errorf("the new bundle doesn't verify: %w", err)
+	}
 	if err := os.WriteFile(*out, append(b, '\n'), 0o644); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "attest: signed %s for %d subject(s) → %s\n", *predicateType, len(subjects), *out)
+	return nil
+}
+
+// checkBundle verifies a bundle for each subject's digest.
+func checkBundle(v *attest.Verifier, raw []byte, subjects []signer.Subject) error {
+	var b bundle.Bundle
+	if err := b.UnmarshalJSON(raw); err != nil {
+		return err
+	}
+	for _, s := range subjects {
+		if _, err := v.Verify(attest.Candidate{Bundle: &b}, "sha256:"+s.Digest["sha256"]); err != nil {
+			return fmt.Errorf("%s: %w", s.Name, err)
+		}
+	}
 	return nil
 }
 
