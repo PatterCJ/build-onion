@@ -7,6 +7,7 @@ package builder
 import (
 	"bytes"
 	"crypto/rand"
+	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -174,6 +175,9 @@ func (r Runner) fetchRestricted(srcDir, cacheDir string, m *manifest.Manifest) (
 			return nil, err
 		}
 	}
+	if err := requireStatic(onion); err != nil {
+		return nil, err
+	}
 	id, err := randomID()
 	if err != nil {
 		return nil, err
@@ -316,4 +320,21 @@ func Collect(srcDir, outDir string, m *manifest.Manifest) (map[string]string, er
 		digests[name] = digest.Bytes(raw)
 	}
 	return digests, nil
+}
+
+// requireStatic checks the onion binary can run in the proxy's minimal
+// container, which has no C library: a dynamically linked binary fails
+// there with an unhelpful "no such file or directory".
+func requireStatic(path string) error {
+	f, err := elf.Open(path)
+	if err != nil {
+		return nil // not ELF (another OS): the container run reports it
+	}
+	defer f.Close()
+	for _, p := range f.Progs {
+		if p.Type == elf.PT_INTERP {
+			return fmt.Errorf("%s is dynamically linked, so it can't run the egress proxy in its minimal container; build onion with CGO_ENABLED=0", path)
+		}
+	}
+	return nil
 }
