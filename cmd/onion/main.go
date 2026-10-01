@@ -477,14 +477,21 @@ func cmdPeel(args []string) error {
 		return err
 	}
 	id := attest.Identity{SignerWorkflow: *signer, SignerRef: *signerRef}
-	v, err := attest.NewVerifier(*trustedRoot, id)
+	certs, err := attest.NewVerifier(*trustedRoot, id)
 	if err != nil {
 		return err
 	}
+	v := attest.Either{Certs: certs}
 	var trusted *trust.File
 	if *trustPath != "" {
 		if trusted, err = trust.Load(*trustPath); err != nil {
 			return err
+		}
+		// Enterprise signing keys listed as builders in the trust file.
+		if keys := trusted.Keys(); len(keys) > 0 {
+			if v.Keys, err = attest.NewKeyVerifier(keys); err != nil {
+				return err
+			}
 		}
 	}
 	switch *sources {

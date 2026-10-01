@@ -6,6 +6,7 @@ package trust
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/PatterCJ/build-onion/internal/signer"
 	"github.com/PatterCJ/build-onion/internal/tagsig"
 )
 
@@ -34,13 +36,19 @@ type App struct {
 	TagSigners []string `yaml:"tagSigners"`
 }
 
-// Builder is one repository whose reusable workflows may seal artifacts.
+// Builder is one identity that may seal artifacts: build-onion's reusable
+// workflows in a repository (keyless, identified by the signing
+// certificate), or an enterprise signing key (Name and Key).
 type Builder struct {
-	Repository string `yaml:"repository"` // OWNER/REPO
+	Repository string `yaml:"repository,omitempty"` // OWNER/REPO
+	// Name and Key identify a key builder: artifacts sealed with this key
+	// (PEM public key, ECDSA P-256 or P-384) are accepted.
+	Name string `yaml:"name,omitempty"`
+	Key  string `yaml:"key,omitempty"`
 	// TagSigners are the keys (authorized_keys form) whose signed tags may
 	// be added as releases.
-	TagSigners []string  `yaml:"tagSigners"`
-	Releases   []Release `yaml:"releases"`
+	TagSigners []string  `yaml:"tagSigners,omitempty"`
+	Releases   []Release `yaml:"releases,omitempty"`
 }
 
 // Release is one trusted commit of the builder.
@@ -77,6 +85,21 @@ func (f *File) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, b := range f.Builders {
+		if b.Key != "" || b.Name != "" {
+			if b.Name == "" || b.Key == "" {
+				errs = append(errs, errors.New("a key builder needs both name and key"))
+			} else if _, err := signer.ParsePublicKey([]byte(b.Key)); err != nil {
+				errs = append(errs, fmt.Errorf("builder %s: %w", b.Name, err))
+			}
+			if b.Repository != "" || len(b.Releases) > 0 || len(b.TagSigners) > 0 {
+				errs = append(errs, fmt.Errorf("builder %s: a key builder has no repository, releases or tagSigners", b.Name))
+			}
+			if seen["key:"+b.Name] {
+				errs = append(errs, fmt.Errorf("builder %s listed twice", b.Name))
+			}
+			seen["key:"+b.Name] = true
+			continue
+		}
 		if !repoRe.MatchString(b.Repository) {
 			errs = append(errs, fmt.Errorf("builder repository %q must be OWNER/REPO", b.Repository))
 		}
@@ -120,6 +143,20 @@ func (f *File) App(repo string) *App {
 		}
 	}
 	return nil
+}
+
+// Keys returns the key builders' public keys, by name.
+func (f *File) Keys() map[string]*ecdsa.PublicKey {
+	out := map[string]*ecdsa.PublicKey{}
+	for _, b := range f.Builders {
+		if b.Key == "" {
+			continue
+		}
+		if pub, err := signer.ParsePublicKey([]byte(b.Key)); err == nil {
+			out[b.Name] = pub
+		}
+	}
+	return out
 }
 
 // Builder returns the entry for a repository, matched case-insensitively.

@@ -5,7 +5,12 @@ package attest
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,6 +30,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
+	"github.com/sigstore/sigstore/pkg/signature"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/PatterCJ/build-onion/internal/digest"
@@ -51,7 +57,10 @@ type Subject struct {
 type Verified struct {
 	Statement   Statement
 	Certificate certificate.Summary
-	Source      string // where the bundle came from, for the report
+	// Key names the trusted key that signed, for a key-signed bundle; its
+	// Certificate is then empty.
+	Key    string
+	Source string // where the bundle came from, for the report
 }
 
 // Identity pins who may have signed: the build-onion reusable workflow.
@@ -146,6 +155,120 @@ func (v *Verifier) Verify(c Candidate, artifactDigest string) (*Verified, error)
 		return nil, err
 	}
 	return &Verified{Statement: st, Certificate: *res.Signature.Certificate, Source: c.Source}, nil
+}
+
+// KeyVerifier checks bundles signed with trusted keys, as an enterprise KMS
+// signs them: no certificate and no transparency log. The key is the
+// signer's identity.
+type KeyVerifier struct {
+	sev   *verify.Verifier
+	names map[string]string // key hint → name
+}
+
+// NewKeyVerifier trusts the given ECDSA public keys, by name.
+func NewKeyVerifier(keys map[string]*ecdsa.PublicKey) (*KeyVerifier, error) {
+	if len(keys) == 0 {
+		return nil, errors.New("no trusted keys")
+	}
+	mapping := map[string]*root.ExpiringKey{}
+	names := map[string]string{}
+	for name, pub := range keys {
+		hash := crypto.SHA256
+		if pub.Curve == elliptic.P384() {
+			hash = crypto.SHA384
+		}
+		sv, err := signature.LoadVerifier(pub, hash)
+		if err != nil {
+			return nil, fmt.Errorf("key %s: %w", name, err)
+		}
+		der, err := x509.MarshalPKIXPublicKey(pub)
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(der)
+		hint := base64.StdEncoding.EncodeToString(sum[:])
+		mapping[hint] = root.NewExpiringKey(sv, time.Time{}, time.Time{})
+		names[hint] = name
+	}
+	sev, err := verify.NewVerifier(root.NewTrustedPublicKeyMaterialFromMapping(mapping), verify.WithNoObserverTimestamps())
+	if err != nil {
+		return nil, err
+	}
+	return &KeyVerifier{sev: sev, names: names}, nil
+}
+
+// Verify checks a key-signed bundle for the artifact digest.
+func (v *KeyVerifier) Verify(c Candidate, artifactDigest string) (*Verified, error) {
+	alg, raw, err := splitDigest(artifactDigest)
+	if err != nil {
+		return nil, err
+	}
+	vc, err := c.Bundle.VerificationContent()
+	if err != nil {
+		return nil, err
+	}
+	pk := vc.PublicKey()
+	if pk == nil || vc.Certificate() != nil {
+		return nil, errors.New("bundle is not signed with a key")
+	}
+	name, ok := v.names[pk.Hint()]
+	if !ok {
+		return nil, &UntrustedKey{Hint: pk.Hint()}
+	}
+	res, err := v.sev.Verify(c.Bundle, verify.NewPolicy(verify.WithArtifactDigest(alg, raw), verify.WithKey()))
+	if err != nil {
+		return nil, err
+	}
+	if res.Statement == nil {
+		return nil, errors.New("bundle carries no in-toto statement")
+	}
+	js, err := protojson.Marshal(res.Statement)
+	if err != nil {
+		return nil, err
+	}
+	var st Statement
+	if err := json.Unmarshal(js, &st); err != nil {
+		return nil, err
+	}
+	return &Verified{Statement: st, Key: name, Source: c.Source}, nil
+}
+
+// UntrustedKey: a key-signed bundle whose key isn't trusted. Its signature
+// can't be checked, so it is neither valid nor evidence of tampering.
+type UntrustedKey struct{ Hint string }
+
+func (e *UntrustedKey) Error() string {
+	if e.Hint == "" {
+		return "bundle is signed with a key, and no keys are trusted (list them in the trust file)"
+	}
+	return fmt.Sprintf("bundle signed with key %s, which is not trusted", e.Hint)
+}
+
+// KeySigned reports whether a bundle is signed with a key rather than a
+// certificate.
+func (c Candidate) KeySigned() bool {
+	if c.Bundle == nil {
+		return false
+	}
+	vc, err := c.Bundle.VerificationContent()
+	return err == nil && vc.Certificate() == nil && vc.PublicKey() != nil
+}
+
+// Either verifies certificate bundles with Certs and key-signed bundles with
+// Keys (nil if no keys are trusted).
+type Either struct {
+	Certs *Verifier
+	Keys  *KeyVerifier
+}
+
+func (e Either) Verify(c Candidate, artifactDigest string) (*Verified, error) {
+	if c.KeySigned() {
+		if e.Keys == nil {
+			return nil, &UntrustedKey{}
+		}
+		return e.Keys.Verify(c, artifactDigest)
+	}
+	return e.Certs.Verify(c, artifactDigest)
 }
 
 // IdentityMismatch reports whether a verification error means the bundle is

@@ -145,6 +145,12 @@ builders:
       - tag: v0.1.0
         commit: 0123456789abcdef0123456789abcdef01234567
         added: "2026-10-01"
+  # An enterprise signing key (artifacts sealed with onion attest --signer-command).
+  - name: acme-kms-release
+    key: |
+      -----BEGIN PUBLIC KEY-----
+      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE…
+      -----END PUBLIC KEY-----
 apps:
   - repository: acme/widget
     tagSigners:
@@ -157,6 +163,7 @@ apps:
 | `builders[].repository` | `OWNER/REPO` of the repository whose signing workflow seals artifacts. |
 | `builders[].tagSigners` | SSH public keys allowed to sign its release tags. `onion trust add` requires one. |
 | `builders[].releases` | Trusted releases: `tag`, the 40-hex `commit`, and the date it was `added`. An artifact is accepted only if the commit in its signing certificate is listed here. |
+| `builders[].name`, `builders[].key` | A key builder instead: artifacts sealed with this key (PEM public key, ECDSA P-256 or P-384) are accepted. `peel` reports the seal as signed by that named key; there is no certificate or transparency log, so the repository, commit and run come from the signed records. A key builder has no `repository`, `releases` or `tagSigners`. |
 | `apps[].repository` | Optional. `OWNER/REPO` of a repository whose artifacts this verifier checks. |
 | `apps[].tagSigners` | SSH public keys allowed to sign that repository's release tags. An artifact from a listed repository must have been released from a tag signed by one of them, whatever the repository's own policy allows. A repository not listed is noted, not checked. |
 
@@ -388,7 +395,7 @@ onion record scan --name NAME --status STATUS --subject-kind KIND --subject DIGE
 
 ### `onion attest`
 
-Sign an in-toto statement about one or more artifacts and write it as a Sigstore bundle, keyless: a short-lived key, certified by Fulcio for the CI job's OIDC identity and recorded in Rekor. `onion peel --bundles` verifies the result like any other bundle.
+Sign an in-toto statement about one or more artifacts and write it as a Sigstore bundle: keyless by default (a short-lived key, certified by Fulcio for the CI job's OIDC identity and recorded in Rekor), or with your own key through a signer command. `onion peel --bundles` verifies the result like any other bundle.
 
 ```sh
 onion attest --subject NAME@sha256:HEX --predicate FILE --predicate-type URI --out bundle.json
@@ -405,6 +412,10 @@ onion attest --subject-checksums files.sha256 --provenance github --out provenan
 | `--token SOURCE` | `github` | Where the OIDC token comes from: `github` (the job needs `id-token: write`), or `env:NAME` for a token another CI provides. |
 | `--fulcio URL`, `--rekor URL` | public-good Sigstore | Sigstore instances to use. |
 | `--trusted-root FILE` | *(public-good via TUF)* | Trusted root the new bundle is checked against before it is written. Required with a private `--fulcio` or `--rekor`. |
+| `--signer-command CMD` | | Sign with a key held elsewhere (a KMS, an HSM, an in-house signing service) instead of keyless. See below. |
+| `--public-key FILE` | | With `--signer-command`: the PEM public key of the key it signs with, ECDSA P-256 or P-384. |
+
+**Signing with your own key.** With `--signer-command`, onion never holds a private key. It runs the command with `/bin/sh -c`, in onion's environment (where your KMS credentials are), passes the exact bytes to sign on stdin, and expects the signature on stdout, base64-encoded, as ASN.1 DER or as raw `r||s` (the form Azure Key Vault and many HSMs return). The command is any client of your KMS or HSM that signs data with a SHA-256 (P-256) or SHA-384 (P-384) ECDSA key. onion checks the signature against `--public-key` before using it, so a signer that used another key or returned anything else fails. Key-signed bundles have no certificate and no transparency log entry; the key is the signer's identity.
 
 Before writing, `attest` verifies the new bundle for every subject with the same verifier and rules as `peel`, so it never writes a bundle `peel` would reject.
 
