@@ -33,6 +33,9 @@ type Package struct {
 	Archives []string `json:"archives,omitempty"`
 	// Dev marks development-only dependencies, expected not to ship.
 	Dev bool `json:"dev,omitempty"`
+	// InstallScript marks a package the lockfile says runs code when it is
+	// installed (npm's hasInstallScript): code that runs during fetch.
+	InstallScript bool `json:"installScript,omitempty"`
 }
 
 // Local is a package built from this source rather than fetched: a Go main
@@ -166,4 +169,33 @@ func SRIDigests(sri string) ([]string, error) {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i] > out[j] }) // sha512 > sha384 > sha256 > sha1
 	return out, nil
+}
+
+// ScriptsDisabled reports whether a fetch step turns off npm's install
+// scripts, with --ignore-scripts or npm_config_ignore_scripts in its
+// environment.
+func ScriptsDisabled(fetch string, env map[string]string) bool {
+	for _, f := range strings.Fields(fetch) {
+		if f == "--ignore-scripts" || f == "--ignore-scripts=true" {
+			return true
+		}
+	}
+	for k, v := range env {
+		if strings.EqualFold(k, "npm_config_ignore_scripts") && (v == "true" || v == "1") {
+			return true
+		}
+	}
+	return false
+}
+
+// InstallScripts lists the packages that run install scripts, as name@version.
+func InstallScripts(pkgs []Package) []string {
+	var out []string
+	for _, p := range pkgs {
+		if p.InstallScript {
+			out = append(out, p.Name+"@"+p.Version)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

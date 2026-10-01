@@ -500,7 +500,10 @@ const (
 
 // Record is what the inventory keeps about the fetch step's network.
 type Record struct {
-	Mode       string                `json:"mode"`
+	Mode string `json:"mode"`
+	// Snapshot is the digest of the source snapshot fetch ran on, binding
+	// the record to the source it describes.
+	Snapshot   string                `json:"snapshot,omitempty"`
 	Rules      []manifest.EgressRule `json:"rules,omitempty"`
 	ProxyImage string                `json:"proxyImage,omitempty"`
 	Summary    *Summary              `json:"summary,omitempty"`

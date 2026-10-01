@@ -294,6 +294,7 @@ func Run(in Input) *Report {
 		default:
 			r.grade("inventory", "build inputs", Passed, "the build saw %d of %d tracked files (%s)", bi.Files, bi.Of, strings.Join(bi.Patterns, ", "))
 		}
+		checkInstallScripts(r, &inv)
 		checkGate(r, &inv)
 		if in.Trust != nil {
 			checkAppSigner(r, in.Trust, in.Claim.Repository, &inv)
@@ -471,6 +472,7 @@ func checkEgress(r *Report, inv *inventory.Inventory) {
 		r.grade("egress", "fetch network", Degraded, "fetch had unrestricted network; declare dependencies.egress to restrict and record it")
 		return
 	case e.Mode == egress.ModeRecord:
+		checkEgressSource(r, e, inv)
 		checkRecordedEgress(r, e)
 		return
 	case e.Mode != egress.ModeAllowList:
@@ -478,6 +480,7 @@ func checkEgress(r *Report, inv *inventory.Inventory) {
 		return
 	}
 	r.check("egress", "proxy pinned by digest", manifest.IsPinnedImage(e.ProxyImage), Finding, "%s", e.ProxyImage)
+	checkEgressSource(r, e, inv)
 	if e.Summary == nil {
 		r.grade("egress", "fetch connections", Failed, "allow-list mode without a connection log")
 		return
@@ -498,6 +501,31 @@ func checkEgress(r *Report, inv *inventory.Inventory) {
 	}
 	r.grade("egress", "fetch connections", Passed, "%d connection(s) to %d destination(s), all within the allow-list (%s)",
 		total, len(hosts), strings.Join(declared, ", "))
+}
+
+// checkEgressSource requires the egress record, when it names the source it
+// fetched for, to name this build's.
+func checkEgressSource(r *Report, e *egress.Record, inv *inventory.Inventory) {
+	if e.Snapshot == "" {
+		return
+	}
+	r.check("egress", "fetch ran on this source", e.Snapshot == inv.Source.Snapshot, Finding,
+		"egress record %s, inventory %s", e.Snapshot, inv.Source.Snapshot)
+}
+
+// checkInstallScripts notes locked packages that run code during fetch, and
+// whether the fetch step turned that off. Whether to allow it is a policy
+// decision (blockInstallScripts), so this is context, not a grade.
+func checkInstallScripts(r *Report, inv *inventory.Inventory) {
+	scripts := lockfile.InstallScripts(inv.Dependencies)
+	if len(scripts) == 0 {
+		return
+	}
+	if lockfile.ScriptsDisabled(inv.Build.Fetch, inv.Build.FetchEnv) {
+		r.grade("inventory", "dependency install scripts", Note, "%d package(s) have install scripts; the fetch step disabled them%s", len(scripts), listNote(scripts))
+		return
+	}
+	r.grade("inventory", "dependency install scripts", Note, "%d package(s) ran install scripts during fetch%s", len(scripts), listNote(scripts))
 }
 
 // checkRecordedEgress grades a report-mode fetch: the proxy recorded every

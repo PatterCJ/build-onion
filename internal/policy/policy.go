@@ -49,6 +49,10 @@ type Policy struct {
 	// BlockOpaqueInputs refuses to build a change that adds or modifies a
 	// binary file the build can read.
 	BlockOpaqueInputs bool `yaml:"blockOpaqueInputs" json:"blockOpaqueInputs,omitempty"`
+	// BlockInstallScripts refuses to build when a locked dependency runs
+	// install scripts during fetch (npm hasInstallScript) and the fetch
+	// step doesn't disable them.
+	BlockInstallScripts bool `yaml:"blockInstallScripts" json:"blockInstallScripts,omitempty"`
 	// Repository lists protections the repository must have before a build
 	// is allowed. All are read without admin rights.
 	Repository Repository `yaml:"repository" json:"repository,omitempty"`

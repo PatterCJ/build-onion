@@ -443,3 +443,41 @@ func TestReportMode(t *testing.T) {
 		t.Errorf("forbidden event not refused in report mode: %+v", v)
 	}
 }
+
+func TestBlockInstallScripts(t *testing.T) {
+	f := setup(t)
+	lock, err := os.ReadFile("../lockfile/testdata/npm-install-scripts/package-lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(f.dir, "package-lock.json"), lock, 0o644)
+	f.git(t, "add", ".")
+	f.git(t, "commit", "-qm", "npm")
+	m := &manifest.Manifest{Dependencies: manifest.Dependencies{Lockfiles: []string{"package-lock.json"}, Fetch: "npm ci"}}
+	pol := policy.Default()
+	pol.BlockInstallScripts = true
+	eval := func(m *manifest.Manifest) *Verdict {
+		v, err := Evaluate(Params{SourceDir: f.dir, ManifestPath: "build-onion.yml", Context: Context{Event: "push", Ref: "refs/heads/main"}}, pol, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if v := eval(m); !v.Blocked || !strings.Contains(strings.Join(v.BlockedBy, ";"), "esbuild@0.24.0") {
+		t.Errorf("install scripts not blocked: %v", v.BlockedBy)
+	}
+	m.Dependencies.Fetch = "npm ci --ignore-scripts"
+	if v := eval(m); v.Blocked {
+		t.Errorf("blocked although scripts are disabled: %v", v.BlockedBy)
+	}
+	m.Dependencies.Fetch = "npm ci"
+	m.Dependencies.Env = map[string]string{"npm_config_ignore_scripts": "true"}
+	if v := eval(m); v.Blocked {
+		t.Errorf("blocked although npm_config_ignore_scripts is set: %v", v.BlockedBy)
+	}
+	pol.BlockInstallScripts = false
+	m.Dependencies.Env = nil
+	if v := eval(m); v.Blocked {
+		t.Errorf("blocked without the policy: %v", v.BlockedBy)
+	}
+}

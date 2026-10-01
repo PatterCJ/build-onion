@@ -251,3 +251,30 @@ func TestArchives(t *testing.T) {
 		t.Error("non-hex checksum accepted")
 	}
 }
+
+func TestInstallScripts(t *testing.T) {
+	data, err := os.ReadFile("testdata/npm-install-scripts/package-lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, _, err := Parse("package-lock.json", data, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := InstallScripts(res.Packages); len(got) != 1 || got[0] != "esbuild@0.24.0" {
+		t.Errorf("install scripts = %v", got)
+	}
+	for fetch, want := range map[string]bool{
+		"npm ci":                       false,
+		"npm ci --ignore-scripts":      true,
+		"npm ci --ignore-scripts=true": true,
+		"npm ci --ignore-scripts-x":    false,
+	} {
+		if got := ScriptsDisabled(fetch, nil); got != want {
+			t.Errorf("%q: disabled = %v", fetch, got)
+		}
+	}
+	if !ScriptsDisabled("npm ci", map[string]string{"NPM_CONFIG_IGNORE_SCRIPTS": "true"}) {
+		t.Error("npm_config_ignore_scripts not honoured")
+	}
+}

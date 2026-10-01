@@ -26,6 +26,9 @@ requireBuildInputs: true
 # Refuse to build a change that adds or modifies a binary file (by content)
 # the build can read.
 blockOpaqueInputs: true
+# Refuse to build when a locked dependency would run install scripts during
+# fetch (npm's hasInstallScript) and the fetch step doesn't disable them.
+blockInstallScripts: true
 ```
 
 Save it as `.build-onion/policy.yml` and both the build and security lines apply it, whether or not the workflows name it (the `policy` input points elsewhere). With no policy file, the defaults above apply.

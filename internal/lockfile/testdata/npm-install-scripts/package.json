@@ -1,0 +1,1 @@
+{"name":"onion-install-scripts-fixture","version":"1.0.0","private":true,"dependencies":{"esbuild":"^0.24.0","semver":"^7.6.3"}}

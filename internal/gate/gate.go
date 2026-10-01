@@ -15,6 +15,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/policy"
 	"github.com/PatterCJ/build-onion/internal/source"
@@ -145,6 +146,17 @@ func evaluate(v *Verdict, p Params, pol *policy.Policy, m *manifest.Manifest) er
 			v.BlockedBy = append(v.BlockedBy, "repository: "+prob)
 		}
 	}
+	if pol.BlockInstallScripts && !lockfile.ScriptsDisabled(m.Dependencies.Fetch, m.Dependencies.Env) {
+		scripts, err := installScripts(p.SourceDir, m)
+		if err != nil {
+			return err
+		}
+		if len(scripts) > 0 {
+			v.Blocked = true
+			v.BlockedBy = append(v.BlockedBy, fmt.Sprintf("policy blocks dependency install scripts during fetch: %s run code when installed; fetch with --ignore-scripts or set npm_config_ignore_scripts=true in dependencies.env",
+				strings.Join(scripts, ", ")))
+		}
+	}
 	if pol.BlockOpaqueInputs && len(v.OpaqueInputs) > 0 {
 		v.Blocked = true
 		v.BlockedBy = append(v.BlockedBy, fmt.Sprintf("policy blocks binary changes the build can read: %s", strings.Join(v.OpaqueInputs, ", ")))
@@ -260,4 +272,23 @@ func checkTagSignature(dir, tag string, signers []string) (string, error) {
 		return "", fmt.Errorf("signed tag names %s at %s, but this build is %s at %s", t.Name, t.Object, tag, strings.TrimSpace(string(head)))
 	}
 	return t.Key, nil
+}
+
+// installScripts lists the locked packages that run install scripts.
+func installScripts(dir string, m *manifest.Manifest) ([]string, error) {
+	var out []string
+	for _, l := range m.Dependencies.Lockfiles {
+		full := filepath.Join(dir, filepath.FromSlash(l))
+		data, err := os.ReadFile(full)
+		if err != nil {
+			return nil, fmt.Errorf("lockfile: %w", err)
+		}
+		sibling := func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(filepath.Dir(full), name)) }
+		res, _, err := lockfile.Parse(l, data, sibling)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, lockfile.InstallScripts(res.Packages)...)
+	}
+	return out, nil
 }

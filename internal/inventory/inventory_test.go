@@ -427,3 +427,20 @@ func TestRecordedEgressNeedsReportMode(t *testing.T) {
 		t.Errorf("recorded egress with a report-mode gate: %v", err)
 	}
 }
+
+// An egress record names the source snapshot it fetched for; it must be this
+// build's.
+func TestEgressRecordBoundToSnapshot(t *testing.T) {
+	src, snap := gitSource(t)
+	files := t.TempDir()
+	os.WriteFile(filepath.Join(files, "widget"), []byte("binary"), 0o755)
+	p := params(src, snap, files)
+	p.Egress = &egress.Record{Mode: egress.ModeUnrestricted, Snapshot: digest.Bytes([]byte("another"))}
+	if _, _, err := Generate(p); err == nil || !strings.Contains(err.Error(), "snapshot") {
+		t.Errorf("egress record for another source accepted: %v", err)
+	}
+	p.Egress.Snapshot = snap.Digest
+	if _, _, err := Generate(p); err != nil {
+		t.Errorf("matching egress record rejected: %v", err)
+	}
+}
