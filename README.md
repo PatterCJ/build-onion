@@ -100,7 +100,8 @@ $ onion peel ghcr.io/acme/widget@sha256:… --repo acme/widget --ref 'refs/heads
 | `--trust FILE` | Accept only artifacts sealed by a build-onion release on this list (see [Adopting](docs/adopting.md#6-trust-build-onion-releases-not-commits)). |
 | `--baseline ARTIFACT` | Also verify a previous release and report what changed since it. |
 | `--packages` | List every package found in the artifact, its outcome, and its upstream outcome. |
-| `--bundles DIR` | Verify offline from saved bundles instead of the GitHub attestations API. |
+| `--attestations SOURCE` | Where to find the bundles: `registry` (next to the image), `github`, or `auto` (both). |
+| `--bundles DIR` | Verify offline from saved bundles instead. |
 | `--json` | Print the full report as JSON. |
 | `--allow-degraded` | Exit 0 when the only problems are coverage gaps. |
 
@@ -147,7 +148,7 @@ NOTE lines give context without affecting the verdict.
 
 ## The `onion` CLI
 
-The CLI takes everything as flags and has no dependency on GitHub; the reusable workflows supply events, refs and Sigstore signing. Its commands (`validate`, `source`, `gate`, `fetch`, `build`, `compare`, `upstream`, `record`, `inventory`, `attest`, `peel`, `trust`) can be driven from any CI system.
+The CLI takes everything as flags and has no dependency on GitHub; the reusable workflows supply events, refs and Sigstore signing. Its commands (`validate`, `source`, `gate`, `fetch`, `build`, `compare`, `upstream`, `record`, `inventory`, `attest`, `push-bundles`, `peel`, `trust`) can be driven from any CI system.
 
 ## Development
 
