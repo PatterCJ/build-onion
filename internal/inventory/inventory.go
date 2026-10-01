@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/PatterCJ/build-onion/internal/chain"
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
@@ -49,6 +51,9 @@ type Inventory struct {
 	// Upstream is every locked dependency checked against its public
 	// registry: published bytes, and signed provenance where there is some.
 	Upstream *upstream.Record `json:"upstream,omitempty"`
+	// Chain is a single-pipeline build's phase records: what each phase
+	// consumed and produced, each hand-off matched.
+	Chain []chain.Link `json:"chain,omitempty"`
 }
 
 type Verification struct {
@@ -144,6 +149,8 @@ type Params struct {
 	Egress *egress.Record
 	// Upstream is the security line's registry check of the lockfiles.
 	Upstream *upstream.Record
+	// Chain is the phase records of a single-pipeline build.
+	Chain []chain.Link
 	// ResolveBase returns a pinned image's layer diffIDs (linux/amd64).
 	ResolveBase func(ref string) ([]string, error)
 }
@@ -280,6 +287,12 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 	if err := checkScans(inv); err != nil {
 		return nil, nil, err
 	}
+	if p.Chain != nil {
+		if err := CheckChain(inv, p.Chain); err != nil {
+			return nil, nil, fmt.Errorf("phase records: %w", err)
+		}
+		inv.Chain = p.Chain
+	}
 	return inv, m, nil
 }
 
@@ -358,6 +371,51 @@ func CheckUpstream(lockfiles []FileRef, pkgs []lockfile.Package, rec *upstream.R
 		if !checked[k] {
 			errs = append(errs, fmt.Errorf("%s is locked but wasn't checked", k))
 		}
+	}
+	return errors.Join(errs...)
+}
+
+// CheckChain verifies a single-pipeline build's phase records against the
+// inventory's own, recomputed facts: the chain must be complete and
+// consistent, start at this build's source snapshot, and end in exactly the
+// outputs the inventory hashed.
+func CheckChain(inv *Inventory, links []chain.Link) error {
+	expected := chain.Expected(inv.Build.Fetch != "", inv.Build.Image != nil)
+	if err := chain.Verify(links, expected, inv.Source.Snapshot); err != nil {
+		return err
+	}
+	var build, image *chain.Link
+	for i := range links {
+		switch links[i].Step {
+		case chain.StepBuild:
+			build = &links[i]
+		case chain.StepImage:
+			image = &links[i]
+		}
+	}
+	var errs []error
+	files := 0
+	for _, o := range inv.Outputs {
+		switch o.Kind {
+		case "file":
+			files++
+			if d, ok := build.Product("file " + o.Name); !ok || d != o.Digest {
+				errs = append(errs, fmt.Errorf("output %s is %s, but the build record says %s", o.Name, o.Digest, d))
+			}
+		case "oci-image":
+			if d, ok := image.Product("image"); !ok || d != o.Digest {
+				errs = append(errs, fmt.Errorf("image is %s, but the image record says %s", o.Digest, d))
+			}
+		}
+	}
+	recorded := 0
+	for _, r := range build.Products {
+		if strings.HasPrefix(r.Name, "file ") {
+			recorded++
+		}
+	}
+	if recorded != files {
+		errs = append(errs, fmt.Errorf("the build record has %d output file(s), the inventory %d", recorded, files))
 	}
 	return errors.Join(errs...)
 }

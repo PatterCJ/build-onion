@@ -80,3 +80,33 @@ func TestOCILayers(t *testing.T) {
 		t.Fatal("tampered config accepted")
 	}
 }
+
+func TestTree(t *testing.T) {
+	mk := func() string {
+		d := t.TempDir()
+		os.MkdirAll(filepath.Join(d, "a", "b"), 0o755)
+		os.WriteFile(filepath.Join(d, "a", "b", "f"), []byte("x"), 0o644)
+		os.WriteFile(filepath.Join(d, "run.sh"), []byte("#!/bin/sh"), 0o755)
+		os.Symlink("a/b/f", filepath.Join(d, "link"))
+		return d
+	}
+	d1, d2 := mk(), mk()
+	t1, n, err := Tree(d1)
+	t2, _, _ := Tree(d2)
+	if err != nil || n != 2 || t1 != t2 {
+		t.Fatalf("same contents differ: %s %s (%d files, %v)", t1, t2, n, err)
+	}
+	for name, change := range map[string]func(string){
+		"content":        func(d string) { os.WriteFile(filepath.Join(d, "a", "b", "f"), []byte("y"), 0o644) },
+		"mode":           func(d string) { os.Chmod(filepath.Join(d, "run.sh"), 0o644) },
+		"extra file":     func(d string) { os.WriteFile(filepath.Join(d, "extra"), nil, 0o644) },
+		"symlink target": func(d string) { os.Remove(filepath.Join(d, "link")); os.Symlink("run.sh", filepath.Join(d, "link")) },
+		"empty dir":      func(d string) { os.Mkdir(filepath.Join(d, "empty"), 0o755) },
+	} {
+		d := mk()
+		change(d)
+		if got, _, _ := Tree(d); got == t1 {
+			t.Errorf("%s change not detected", name)
+		}
+	}
+}

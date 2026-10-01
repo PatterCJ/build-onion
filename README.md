@@ -116,7 +116,7 @@ Set `GITHUB_TOKEN` when verifying often: unauthenticated GitHub API requests are
 | **inventory** | Same commit and run as the provenance, the artifact is a declared output, the builder is pinned, the build had no network, and which files the build could read. |
 | **gate** | The release rules allowed it; build-configuration and binary changes are listed as notes. |
 | **egress** | Every connection fetch made was to an allowed host. |
-| **verification** | The independent rebuild produced this exact digest. |
+| **verification** | The independent rebuild produced this exact digest. For a single-pipeline build, the phase records show every hand-off matched, and the missing rebuild is graded DEGRADED with the reason. |
 | **pipeline** | The build-onion commit, every action pinned, and each job's runner and tools recorded. |
 | **scans** | Each recorded scan examined this build and completed. |
 | **dependencies** | Every package inside the artifact is accounted for: declared in the lockfile at the same version (and the same content hash where both carry one), from the pinned base image's layers, or bundled inside a declared package. |

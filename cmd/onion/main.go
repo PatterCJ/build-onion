@@ -23,6 +23,7 @@ import (
 
 	"github.com/PatterCJ/build-onion/internal/attest"
 	"github.com/PatterCJ/build-onion/internal/builder"
+	"github.com/PatterCJ/build-onion/internal/chain"
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
@@ -81,6 +82,7 @@ func main() {
 		"attest":       cmdAttest,
 		"push-bundles": cmdPushBundles,
 		"image-files":  cmdImageFiles,
+		"link":         cmdLinkImage,
 		"trust":        cmdTrust,
 		"proxy":        cmdProxy,
 		"fetch":        cmdFetch,
@@ -173,6 +175,8 @@ func cmdFetch(args []string) error {
 	snap := fs.String("snapshot", "", "verify the source against this snapshot before and after")
 	egressOut := fs.String("egress-out", "", "write the fetch network record (mode, rules, connections) here")
 	policyPath := fs.String("policy", "", "policy file (default: "+policy.DefaultPath+" in --source if present); mode report records egress instead of blocking it")
+	var lf linkFlags
+	lf.register(fs)
 	fs.Parse(args)
 	if *cache == "" {
 		return errors.New("--cache is required")
@@ -193,6 +197,17 @@ func cmdFetch(args []string) error {
 		}
 		snapDigest = sn.Digest
 	}
+	link, prev, err := lf.start(chain.StepFetch, snapDigest)
+	if err != nil {
+		return err
+	}
+	if link != nil {
+		snapRes := chain.Resource{Name: "source-snapshot", Digest: snapDigest}
+		if err := requireProduct(prev, snapRes); err != nil {
+			return err
+		}
+		link.Materials = []chain.Resource{snapRes}
+	}
 	var rec *egress.Record
 	_, cleanup, err := guarded(s, *snap, "", m, func(dir string) error {
 		var ferr error
@@ -211,6 +226,15 @@ func cmdFetch(args []string) error {
 				err = werr
 			}
 		}
+	}
+	// The phase record is written only for a fetch that succeeded.
+	if err == nil && link != nil {
+		res, cerr := treeProduct("cache", *cache)
+		if cerr != nil {
+			return cerr
+		}
+		link.Products = []chain.Resource{res}
+		err = chain.Write(lf.out, *link)
 	}
 	return err
 }
@@ -314,6 +338,8 @@ func cmdBuild(args []string) error {
 	out := fs.String("out", "", "directory to collect declared output files into")
 	snap := fs.String("snapshot", "", "stage the declared inputs from this snapshot and verify them after the build")
 	stageDir := fs.String("stage-dir", "", "keep the staged tree here (the image build's context); default: a temporary directory")
+	var lf linkFlags
+	lf.register(fs)
 	fs.Parse(args)
 	if *cache == "" || *out == "" {
 		return errors.New("--cache and --out are required")
@@ -321,6 +347,35 @@ func cmdBuild(args []string) error {
 	m, err := s.load()
 	if err != nil {
 		return err
+	}
+	snapDigest := ""
+	if *snap != "" {
+		sn, err := loadSnapshot(*snap, "")
+		if err != nil {
+			return err
+		}
+		snapDigest = sn.Digest
+	}
+	link, prev, err := lf.start(chain.StepBuild, snapDigest)
+	if err != nil {
+		return err
+	}
+	if link != nil {
+		// The build consumes the source and, after a fetch, exactly the
+		// cache the fetch produced.
+		link.Materials = []chain.Resource{{Name: "source-snapshot", Digest: snapDigest}}
+		if prev.Step == chain.StepFetch {
+			res, err := treeProduct("cache", *cache)
+			if err != nil {
+				return err
+			}
+			if err := requireProduct(prev, res); err != nil {
+				return err
+			}
+			link.Materials = append(link.Materials, res)
+		} else if err := requireProduct(prev, link.Materials[0]); err != nil {
+			return err
+		}
 	}
 	dir, cleanup, err := guarded(s, *snap, *stageDir, m, func(dir string) error {
 		return builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Build(dir, *cache, m)
@@ -332,6 +387,21 @@ func cmdBuild(args []string) error {
 	digests, err := builder.Collect(dir, *out, m)
 	if err != nil {
 		return err
+	}
+	if link != nil {
+		for _, n := range sortedNames(digests) {
+			link.Products = append(link.Products, chain.Resource{Name: "file " + n, Digest: digests[n]})
+		}
+		if m.Outputs.Image != nil {
+			res, err := treeProduct("image-context", dir)
+			if err != nil {
+				return err
+			}
+			link.Products = append(link.Products, res)
+		}
+		if err := chain.Write(lf.out, *link); err != nil {
+			return err
+		}
 	}
 	names := make([]string, 0, len(digests))
 	for n := range digests {
@@ -383,6 +453,7 @@ func cmdInventory(args []string) error {
 	gatePath := fs.String("gate", "", "gate verdict JSON from 'onion gate'")
 	rebuildPath := fs.String("rebuild", "", "comparison JSON from 'onion compare'")
 	upstreamPath := fs.String("upstream", "", "registry check JSON from 'onion upstream'")
+	linksDir := fs.String("links", "", "directory of phase records from a single-pipeline build (--link-out)")
 	egressPath := fs.String("egress", "", "fetch network record from 'onion fetch --egress-out'")
 	fs.Parse(args)
 	if p.Repository == "" || p.Commit == "" || p.Tree == "" || p.FilesDir == "" || *snapPath == "" || *records == "" {
@@ -423,6 +494,11 @@ func cmdInventory(args []string) error {
 	if *upstreamPath != "" {
 		p.Upstream = new(upstream.Record)
 		if err := readJSON(*upstreamPath, p.Upstream); err != nil {
+			return err
+		}
+	}
+	if *linksDir != "" {
+		if p.Chain, err = readLinks(*linksDir); err != nil {
 			return err
 		}
 	}
@@ -739,4 +815,13 @@ func printReport(w io.Writer, r *peel.Report) {
 		peel.Failed:      "trustworthy evidence could not be produced",
 	}
 	fmt.Fprintf(w, "\n%s: %s (%s)\n", r.Verdict, meaning[r.Verdict], strings.Join(tally, ", "))
+}
+
+func sortedNames(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

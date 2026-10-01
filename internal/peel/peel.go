@@ -617,6 +617,15 @@ func checkRepoProtections(r *Report, rc *gate.RepoCheck) {
 // matched the build line for this artifact.
 func checkVerification(r *Report, inv *inventory.Inventory, d string) {
 	v := inv.Verification
+	if (v == nil || v.Rebuild == nil) && len(inv.Chain) > 0 {
+		checkChain(r, inv)
+		r.grade("verification", "independent rebuild", Degraded,
+			"not performed: a single-pipeline build. Its phase records show every phase consumed exactly what the previous one produced and the outputs are the ones recorded, so nothing was swapped between phases. They can't show a phase computed the right result: a compromised build step records its own wrong output consistently, and only a rebuild on separate infrastructure detects that")
+		return
+	}
+	if len(inv.Chain) > 0 {
+		checkChain(r, inv)
+	}
 	if !r.check("verification", "security line recorded", v != nil && v.Rebuild != nil, Failed, "") {
 		return
 	}
@@ -632,6 +641,20 @@ func checkVerification(r *Report, inv *inventory.Inventory, d string) {
 	}
 	r.check("verification", "independent rebuild matched", m.Match && v.Rebuild.Matched, Finding,
 		"%s %s: build line %s, rebuild %s on %s", m.Kind, m.Name, m.Staged, m.Rebuilt, v.Rebuild.Runner)
+}
+
+// checkChain re-verifies a single-pipeline build's phase records against
+// the inventory's own facts.
+func checkChain(r *Report, inv *inventory.Inventory) {
+	if err := inventory.CheckChain(inv, inv.Chain); err != nil {
+		r.grade("verification", "phase records", Finding, "%v", firstLine(err.Error()))
+		return
+	}
+	var steps []string
+	for _, l := range inv.Chain {
+		steps = append(steps, l.Step)
+	}
+	r.grade("verification", "phase records", Passed, "%s: every hand-off matched, run %s", strings.Join(steps, " → "), inv.Chain[0].Run)
 }
 
 // checkScans lists the tools the pipeline ran and binds each to this build.

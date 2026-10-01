@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PatterCJ/build-onion/internal/chain"
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
@@ -442,5 +443,43 @@ func TestEgressRecordBoundToSnapshot(t *testing.T) {
 	p.Egress.Snapshot = snap.Digest
 	if _, _, err := Generate(p); err != nil {
 		t.Errorf("matching egress record rejected: %v", err)
+	}
+}
+
+// A single-pipeline build's phase records are accepted only when they are a
+// complete chain for this source that ends in the outputs the inventory
+// hashed itself.
+func TestGenerateChain(t *testing.T) {
+	src, snap := gitSource(t)
+	files := t.TempDir()
+	os.WriteFile(filepath.Join(files, "widget"), []byte("binary"), 0o755)
+	cache := digest.Bytes([]byte("cache"))
+	links := func(output string) []chain.Link {
+		s := chain.Link{Step: chain.StepSnapshot, Run: "r1", Snapshot: snap.Digest, Products: []chain.Resource{{Name: "source-snapshot", Digest: snap.Digest}}}
+		f, _ := chain.Next(s, chain.StepFetch, "r1", snap.Digest)
+		f.Materials, f.Products = []chain.Resource{{Name: "source-snapshot", Digest: snap.Digest}}, []chain.Resource{{Name: "cache", Digest: cache}}
+		b, _ := chain.Next(f, chain.StepBuild, "r1", snap.Digest)
+		b.Materials = []chain.Resource{{Name: "source-snapshot", Digest: snap.Digest}, {Name: "cache", Digest: cache}}
+		b.Products = []chain.Resource{{Name: "file widget", Digest: digest.Bytes([]byte(output))}}
+		return []chain.Link{s, f, b}
+	}
+	p := params(src, snap, files)
+	p.Chain = links("binary")
+	inv, _, err := Generate(p)
+	if err != nil || len(inv.Chain) != 3 {
+		t.Fatalf("consistent chain: %v", err)
+	}
+	// The recorded output isn't the file being sealed.
+	p.Chain = links("another binary")
+	if _, _, err := Generate(p); err == nil || !strings.Contains(err.Error(), "the build record says") {
+		t.Errorf("swapped output accepted: %v", err)
+	}
+	// The manifest has a fetch step; a chain without one is incomplete.
+	c := links("binary")
+	b, _ := chain.Next(c[0], chain.StepBuild, "r1", snap.Digest)
+	b.Materials, b.Products = []chain.Resource{{Name: "source-snapshot", Digest: snap.Digest}}, c[2].Products
+	p.Chain = []chain.Link{c[0], b}
+	if _, _, err := Generate(p); err == nil {
+		t.Error("chain missing the fetch step accepted")
 	}
 }
