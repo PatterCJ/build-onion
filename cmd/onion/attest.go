@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"flag"
 	"fmt"
@@ -30,12 +31,18 @@ func cmdAttest(args []string) error {
 	token := fs.String("token", "github", "where the OIDC token comes from: github, or env:NAME")
 	fulcio := fs.String("fulcio", signer.PublicFulcio, "Fulcio URL")
 	rekor := fs.String("rekor", signer.PublicRekor, "Rekor URL")
+	signerCommand := fs.String("signer-command", "", "sign with an external command instead of keyless: the bytes to sign go to its stdin, and it prints the signature, base64-encoded, on stdout (a KMS or HSM client)")
+	publicKeyPath := fs.String("public-key", "", "with --signer-command: the PEM public key of the key it signs with (ECDSA P-256 or P-384)")
 	trustedRoot := fs.String("trusted-root", "", "Sigstore trusted_root.json to check the new bundle against (default: public-good via TUF; required with --fulcio or --rekor)")
 	fs.Parse(args)
 	if *out == "" {
 		return errors.New("--out is required")
 	}
-	if (*fulcio != signer.PublicFulcio || *rekor != signer.PublicRekor) && *trustedRoot == "" {
+	keyMode := *signerCommand != "" || *publicKeyPath != ""
+	if keyMode && (*signerCommand == "" || *publicKeyPath == "") {
+		return errors.New("--signer-command and --public-key go together")
+	}
+	if !keyMode && (*fulcio != signer.PublicFulcio || *rekor != signer.PublicRekor) && *trustedRoot == "" {
 		return errors.New("with a private --fulcio or --rekor, pass --trusted-root so the bundle can be checked")
 	}
 
@@ -71,10 +78,14 @@ func cmdAttest(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	// Fetch the token once: the provenance describes the run it names, and
-	// Fulcio certifies the same token.
-	tok, err := tokenSource(ctx)
-	if err != nil {
-		return err
+	// Fulcio certifies the same token. A key signer needs one only to
+	// describe the run.
+	var tok string
+	var err error
+	if !keyMode || *provenance != "" {
+		if tok, err = tokenSource(ctx); err != nil {
+			return err
+		}
 	}
 
 	var pred []byte
@@ -104,17 +115,29 @@ func cmdAttest(args []string) error {
 	if err != nil {
 		return err
 	}
-	s := signer.NewKeyless(func(context.Context) (string, error) { return tok, nil }, *fulcio, *rekor)
+	var s signer.Signer
+	var v bundleVerifier
+	if keyMode {
+		pub, err := signer.LoadPublicKey(*publicKeyPath)
+		if err != nil {
+			return fmt.Errorf("--public-key: %w", err)
+		}
+		s = &signer.Command{Script: *signerCommand, PublicKey: pub}
+		if v, err = attest.NewKeyVerifier(map[string]*ecdsa.PublicKey{"signing key": pub}); err != nil {
+			return err
+		}
+	} else {
+		s = signer.NewKeyless(func(context.Context) (string, error) { return tok, nil }, *fulcio, *rekor)
+		if v, err = attest.NewAnyIdentityVerifier(*trustedRoot); err != nil {
+			return err
+		}
+	}
 	b, err := s.Sign(ctx, statement)
 	if err != nil {
 		return err
 	}
 	// Never write a bundle peel wouldn't accept: check it now, with peel's
 	// own verifier and rules, for every subject.
-	v, err := attest.NewAnyIdentityVerifier(*trustedRoot)
-	if err != nil {
-		return err
-	}
 	if err := checkBundle(v, b, subjects); err != nil {
 		return fmt.Errorf("the new bundle doesn't verify: %w", err)
 	}
@@ -125,8 +148,12 @@ func cmdAttest(args []string) error {
 	return nil
 }
 
+type bundleVerifier interface {
+	Verify(c attest.Candidate, digest string) (*attest.Verified, error)
+}
+
 // checkBundle verifies a bundle for each subject's digest.
-func checkBundle(v *attest.Verifier, raw []byte, subjects []signer.Subject) error {
+func checkBundle(v bundleVerifier, raw []byte, subjects []signer.Subject) error {
 	var b bundle.Bundle
 	if err := b.UnmarshalJSON(raw); err != nil {
 		return err
