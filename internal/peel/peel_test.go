@@ -860,8 +860,26 @@ func TestKeySignedSeal(t *testing.T) {
 	if strings.Contains(lines(r), "signed for claimed repo") || strings.Contains(lines(r), "builder is a trusted release") {
 		t.Errorf("certificate checks ran on a key-signed seal:\n%s", lines(r))
 	}
-	// A claimed commit the signed provenance doesn't name is still caught.
+	if !strings.Contains(lines(r), "verified against the trust file's keys") {
+		t.Errorf("key-signed bundles described as verified against a workflow:\n%s", lines(r))
+	}
+	// A key can seal for several repositories: claiming the artifact for
+	// another one is caught by the inventory, with or without provenance.
 	in := w.input(t)
+	in.Claim.Repository = "someone/else"
+	if r := Run(in); r.Verdict != Finding || !strings.Contains(lines(r), "FINDING inventory/claimed repository") {
+		t.Errorf("another repository's key-signed artifact: %s\n%s", r.Verdict, lines(r))
+	}
+	delete(w.prov, "buildDefinition")
+	in = w.input(t)
+	in.Claim.Repository = "someone/else"
+	if r := Run(in); !strings.Contains(lines(r), "FINDING inventory/claimed repository") {
+		t.Errorf("another repository's key-signed inventory, no usable provenance:\n%s", lines(r))
+	}
+	w = newWorld()
+	w.key = "acme-kms-release"
+	// A claimed commit the signed provenance doesn't name is still caught.
+	in = w.input(t)
 	in.Claim.Commit = strings.Repeat("9", 40)
 	if r := Run(in); r.Verdict != Finding {
 		t.Errorf("wrong commit with a key seal: %s", r.Verdict)
