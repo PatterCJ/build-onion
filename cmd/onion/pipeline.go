@@ -13,6 +13,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
+	"github.com/PatterCJ/build-onion/internal/gitlabci"
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/policy"
@@ -258,12 +259,24 @@ func cmdRecord(args []string) error {
 		file := fs.String("file", "", "workflow file to record")
 		fs.StringVar(&w.Role, "role", "", "caller | build-onion")
 		fs.StringVar(&w.Ref, "ref", "", "owner/repo/path@ref")
+		format := fs.String("format", "github", "github (a GitHub Actions workflow) or gitlab-ci (a GitLab pipeline definition)")
 		fs.Parse(args[1:])
 		if *out == "" || *file == "" {
 			return errors.New("--out and --file are required")
 		}
 		var err error
-		if w.Actions, err = inventory.WorkflowActions(*file); err != nil {
+		switch *format {
+		case "github":
+			w.Actions, err = inventory.WorkflowActions(*file)
+		case "gitlab-ci":
+			var raw []byte
+			if raw, err = os.ReadFile(*file); err == nil {
+				w.Actions, err = gitlabci.References(raw)
+			}
+		default:
+			err = fmt.Errorf("--format %q: want github or gitlab-ci", *format)
+		}
+		if err != nil {
 			return err
 		}
 		if w.Digest, err = digest.File(*file); err != nil {

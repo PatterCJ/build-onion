@@ -65,7 +65,7 @@ Each line builds its own `onion` CLI from the build-onion commit it runs at.
 | Step | Enforces |
 |---|---|
 | **Snapshot** | Every tracked file is hashed with sha256. Fetch and build run on a copy containing only the declared `build.inputs`, re-checked after each step. A new file outside the declared outputs fails the build. |
-| **Validate** | The builder image and every `FROM` are pinned by digest, and every action by commit SHA. |
+| **Validate** | The builder image and every `FROM` are pinned by digest, and every action by commit SHA (on GitLab, every image and include in `.gitlab-ci.yml`). |
 | **Gate** | Only release refs and events are sealed; pull requests, other branches and forks build but aren't signed. `pull_request_target` and `workflow_run` are refused. Changes to build configuration, and binary files the build can read, are recorded. |
 | **Fetch** | Dependencies are fetched in their own step and checked against the lockfile. With `dependencies.egress`, the only route out is a proxy that allows the listed hosts, and every connection is recorded. |
 | **Build** | Runs in the pinned builder with no network, reading only the staged inputs and the fetched dependencies. |
@@ -117,7 +117,7 @@ Set `GITHUB_TOKEN` when verifying often: unauthenticated GitHub API requests are
 | **gate** | The release rules allowed it; build-configuration and binary changes are listed as notes. |
 | **egress** | Every connection fetch made was to an allowed host. |
 | **verification** | The independent rebuild produced this exact digest. For a single-pipeline build, the phase records show every hand-off matched, and the missing rebuild is graded DEGRADED with the reason. |
-| **pipeline** | The build-onion commit, every action pinned, and each job's runner and tools recorded. |
+| **pipeline** | The build-onion commit, every action (or GitLab image and include) pinned, and each job's runner and tools recorded. |
 | **scans** | Each recorded scan examined this build and completed. |
 | **dependencies** | Every package inside the artifact is accounted for: declared in the lockfile at the same version (and the same content hash where both carry one), from the pinned base image's layers, or bundled inside a declared package. |
 | **upstream** | Every locked package's bytes are what its public registry publishes, and its provenance, where published, verifies. Private packages are listed as notes. |

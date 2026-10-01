@@ -178,7 +178,7 @@ func evaluate(v *Verdict, p Params, pol *policy.Policy, m *manifest.Manifest) er
 // Dockerfile); the repo adds its build scripts in build.sensitive, and a
 // policy can add paths and presets.
 func SensitivePatterns(pol *policy.Policy, m *manifest.Manifest, manifestPath, policyPath string) []string {
-	pats := []string{".github/**", "CODEOWNERS", "docs/CODEOWNERS", manifestPath}
+	pats := []string{".github/**", ".gitlab-ci.yml", ".gitlab/**", "CODEOWNERS", "docs/CODEOWNERS", manifestPath}
 	if policyPath != "" {
 		pats = append(pats, policyPath)
 	}

@@ -1031,6 +1031,9 @@ func TestGitLabKeySealed(t *testing.T) {
 		w.inv.Source.Repository = project
 		w.inv.Run.InvocationURL = pipeline
 		w.inv.Pipeline.Platform = "gitlab-ci"
+		w.inv.Pipeline.Workflows = []inventory.Workflow{{Role: "caller", Actions: []string{
+			"docker://docker.io/library/docker@sha256:" + strings.Repeat("d", 64), "./ci/common.yml",
+		}}}
 		return w
 	}
 	claim := func(w *world) Input {
@@ -1057,6 +1060,15 @@ func TestGitLabKeySealed(t *testing.T) {
 		t.Errorf("verdict %s: %v", r.Verdict, graded(r))
 	}
 
+	if !strings.Contains(lines(r), "PASSED pipeline/every image and include pinned: 2 image and include reference(s) across 1 pipeline definition(s)") {
+		t.Errorf("pipeline definition:\n%s", lines(r))
+	}
+	w := mk(nil)
+	w.inv.Pipeline.Workflows[0].Actions = append(w.inv.Pipeline.Workflows[0].Actions, "template:Jobs/SAST.gitlab-ci.yml")
+	if r := Run(claim(w)); !strings.Contains(lines(r), "FINDING pipeline/every image and include pinned") {
+		t.Errorf("unpinned template:\n%s", lines(r))
+	}
+
 	// Sealed from a ref anyone who can push may create.
 	if r := Run(claim(mk(map[string]string{"CI_COMMIT_REF_PROTECTED": "false"}))); r.Verdict != Finding {
 		t.Errorf("unprotected ref: %s", r.Verdict)
@@ -1071,7 +1083,7 @@ func TestGitLabKeySealed(t *testing.T) {
 		t.Errorf("another project's provenance:\n%s", lines(r))
 	}
 	// GitLab provenance with a certificate: nothing vouches for it.
-	w := mk(nil)
+	w = mk(nil)
 	w.key = ""
 	if r := Run(claim(w)); !strings.Contains(lines(r), "UNSUPPORTED provenance/build type") || r.Verdict == Passed {
 		t.Errorf("certificate-signed GitLab provenance: %s\n%s", r.Verdict, lines(r))

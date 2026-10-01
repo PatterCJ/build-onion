@@ -117,7 +117,7 @@ repository:
 | `release.refs` | `refs/heads/main`, `refs/tags/v*` | Refs (globs) whose builds may be sealed. Everything else builds and is checked, but isn't signed or published. |
 | `release.events` | `push`, `workflow_dispatch`, `release` | Events whose builds may be sealed. `pull_request_target` and `workflow_run` are always refused. |
 | `release.tagSigners` | | SSH public keys (authorized_keys form). When set, a tag release builds only if its tag is signed by one of them and points at the commit being built. |
-| `sensitivePaths` | | Globs added to the build-configuration files the gate records changes to. Always included: `.github/**`, `CODEOWNERS`, the manifest, the policy, the lockfiles, the Dockerfile, and `build.sensitive`. |
+| `sensitivePaths` | | Globs added to the build-configuration files the gate records changes to. Always included: `.github/**`, `.gitlab-ci.yml`, `.gitlab/**`, `CODEOWNERS`, the manifest, the policy, the lockfiles, the Dockerfile, and `build.sensitive`. |
 | `sensitivePresets` | | Named sets of build-system files: `autotools`, `bazel`, `cmake`, `docker`, `go`, `gradle`, `make`, `maven`, `meson`, `node`, `python`, `rust`. |
 | `requireBuildInputs` | `false` | Refuse to build a manifest without `build.inputs`. |
 | `blockOpaqueInputs` | `false` | Refuse to build a change that adds or modifies a binary file (by content) the build can read. |
@@ -339,7 +339,7 @@ It fetches the tag with `git` and requires a signature from one of the builder's
 
 ### `onion validate`
 
-Check a manifest, its pins and the repository's workflows.
+Check a manifest, its pins and the repository's pipeline definitions: every action in `.github/workflows` pinned by commit SHA, and every image and include in `.gitlab-ci.yml` pinned (images by digest; `project` includes and components by commit SHA; `remote` includes by `integrity`; `local` includes are files at the same commit; `template` includes can't be pinned).
 
 ```sh
 onion validate [--source DIR] [--manifest FILE] [--github-output FILE]
@@ -391,7 +391,7 @@ onion record scan --name NAME --status STATUS --subject-kind KIND --subject DIGE
 | `--report-url URL` | Where the report is kept. |
 | `--out FILE` | Record to write (required). |
 
-`record job` (`--name`, `--runner`, repeatable `--tool name=version`), `record workflow` (`--role`, `--ref`, `--file`) and `record build-onion` (`--repository`, `--commit`, `--cli-digest`) record the pipeline itself; each takes `--out`.
+`record job` (`--name`, `--runner`, repeatable `--tool name=version`), `record workflow` (`--role`, `--ref`, `--file`, and `--format gitlab-ci` for a GitLab pipeline definition) and `record build-onion` (`--repository`, `--commit`, `--cli-digest`) record the pipeline itself; each takes `--out`.
 
 ### `onion attest`
 

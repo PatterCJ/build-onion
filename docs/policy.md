@@ -13,7 +13,7 @@ release:
   events: [push, workflow_dispatch, release]     # default
 
 # Build-configuration files, recorded when they change. Always included:
-# .github/**, CODEOWNERS, the manifest, this policy, the lockfiles, the
+# .github/**, .gitlab-ci.yml, .gitlab/**, CODEOWNERS, the manifest, this policy, the lockfiles, the
 # Dockerfile, and the manifest's build.sensitive.
 sensitivePaths:
   - scripts/release/**

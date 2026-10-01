@@ -26,6 +26,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
+	"github.com/PatterCJ/build-onion/internal/gitlabci"
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
@@ -735,19 +736,28 @@ func checkPipeline(r *Report, inv *inventory.Inventory) {
 		"build-onion %s@%s", pl.BuildOnion.Repository, pl.BuildOnion.Commit)
 	var loose []string
 	n := 0
+	gitlab := pl.Platform == "gitlab-ci"
 	for _, w := range pl.Workflows {
 		for _, a := range w.Actions {
 			n++
-			if !strings.HasPrefix(a, "./") && !pinnedUse.MatchString(a) && !(strings.HasPrefix(a, "docker://") && manifest.IsPinnedImage(strings.TrimPrefix(a, "docker://"))) {
+			pinned := strings.HasPrefix(a, "./") || pinnedUse.MatchString(a) || (strings.HasPrefix(a, "docker://") && manifest.IsPinnedImage(strings.TrimPrefix(a, "docker://")))
+			if gitlab {
+				pinned = gitlabci.Pinned(a)
+			}
+			if !pinned {
 				loose = append(loose, a)
 			}
 		}
 	}
+	check, what := "every action pinned", "action reference(s) across %d workflow(s)"
+	if gitlab {
+		check, what = "every image and include pinned", "image and include reference(s) across %d pipeline definition(s)"
+	}
 	if len(pl.Workflows) == 0 {
-		r.grade("pipeline", "every action pinned", Failed, "no workflows recorded")
+		r.grade("pipeline", check, Failed, "no workflows recorded")
 	} else {
-		r.check("pipeline", "every action pinned", len(loose) == 0, Finding,
-			"%d action reference(s) across %d workflow(s)%s", n, len(pl.Workflows), listNote(loose))
+		r.check("pipeline", check, len(loose) == 0, Finding,
+			"%d "+what+"%s", n, len(pl.Workflows), listNote(loose))
 	}
 	r.check("pipeline", "jobs inventoried", len(pl.Jobs) > 0, Degraded, "%d job(s) recorded runner and tool versions", len(pl.Jobs))
 }
