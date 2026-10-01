@@ -184,6 +184,22 @@ To require a specific build-onion version when verifying, pass `--signer-ref`:
 onion peel dist/widget --repo acme/widget --signer-ref refs/tags/v0.1.0
 ```
 
+### On GitLab CI
+
+GitLab has no reusable workflows, so the phases run as jobs of one pipeline, each recording what it consumed and produced (`--run`, `--link-in`, `--link-out`), and the release is sealed with your own key instead of keyless:
+
+| Job | Commands |
+|---|---|
+| snapshot | `onion validate`, `onion source snapshot`, `onion gate --platform gitlab-ci`, `onion upstream` |
+| fetch | `onion fetch` |
+| build | `onion build` |
+| package | `docker buildx build`, then `onion link image` |
+| sbom | your SBOM tool on the image |
+| seal | `onion source verify`, `onion gate` again, `onion record`, `onion inventory --links --platform gitlab-ci`, `onion attest --provenance gitlab --signer-command …` |
+| publish | push the image by digest, `onion push-bundles`, `onion peel` |
+
+Only the seal job gets the key: make it a protected CI/CD variable scoped to the seal job's environment, protect your release tags, and set the minimum role for pipeline variables to "No one allowed". Verify with `onion peel IMAGE --repo gitlab.com/GROUP/PROJECT --trust trust.yml --attestations registry`, where `trust.yml` lists the key as a builder. A single pipeline is graded DEGRADED, with the reason in the report. The [GitLab example project](https://gitlab.com/PatterCJ/onion) has the complete `.gitlab-ci.yml`.
+
 ## 5. Verify in your deploy gate
 
 `peel` exits 0 only when every check passed: 3 for degraded or unsupported coverage, 4 for a finding, 5 when evidence couldn't be produced. `--allow-degraded` accepts incomplete coverage, and `--json` gives a machine-readable report. Typical gate:
