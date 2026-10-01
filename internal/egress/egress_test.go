@@ -383,15 +383,48 @@ func TestReportMode(t *testing.T) {
 		t.Errorf("proposed = %+v", p)
 	}
 
+	// Refused in every mode: metadata and link-local addresses, by name or
+	// as an IP address.
 	for name, target := range map[string]string{
-		"metadata address": fmt.Sprintf("metadata.example.com:%d", port),
-		"IP literal":       fmt.Sprintf("127.0.0.1:%d", port),
+		"metadata by name":    fmt.Sprintf("metadata.example.com:%d", port),
+		"metadata IP literal": "169.254.169.254:80",
 	} {
 		h := newHarness(t, nil, names, true)
 		h.p.Report = true
 		if status, _, _ := h.connect(t, target); !strings.HasPrefix(status, "403") {
 			t.Errorf("%s in report mode: status %s", name, status)
 		}
+	}
+
+	// An IP-address target, which enforce mode refuses, is recorded.
+	h2 := newHarness(t, nil, names, true)
+	h2.p.Report = true
+	status, c2, _ := h2.connect(t, fmt.Sprintf("127.0.0.1:%d", echoServer(t)))
+	if !strings.HasPrefix(status, "200") {
+		t.Fatalf("IP literal in report mode: status %s", status)
+	}
+	c2.Close()
+	if s := waitForEntries(t, h2, 1); !s.Connections[0].Unlisted || len(s.Proposed()) != 0 {
+		t.Errorf("IP literal: %+v, proposed %+v", s, s.Proposed())
+	}
+}
+
+// An unlisted host on a private address (an internal artifact store) is
+// reached in report mode, and the proposed rule says private: true.
+func TestReportModePrivateHost(t *testing.T) {
+	log := &safeBuffer{}
+	p := &Proxy{Log: log, Report: true}
+	e := Entry{Host: "artifacts.acme.internal", Port: 443, Addr: "10.0.0.8:443", Allowed: true, Unlisted: true}
+	p.log(e)
+	s, err := Summarize(bytes.NewReader(log.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr := s.Proposed(); len(pr) != 1 || !pr[0].Private || pr[0].Host != "artifacts.acme.internal" {
+		t.Errorf("proposed = %+v", pr)
+	}
+	if err := CheckAddr(netip.MustParseAddr("10.0.0.8"), manifest.EgressRule{Host: "x", Private: true}); err != nil {
+		t.Errorf("private rule refused a private address: %v", err)
 	}
 }
 

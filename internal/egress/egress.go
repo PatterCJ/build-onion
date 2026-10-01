@@ -57,9 +57,11 @@ type Proxy struct {
 	CheckAddr func(addr netip.Addr, rule manifest.EgressRule) error
 	// DialTimeout bounds DNS plus TCP connect.
 	DialTimeout time.Duration
-	// Report lets hosts outside Rules through, marking them Unlisted. The
-	// address checks (loopback, link-local, metadata, private) still apply,
-	// and IP-address targets are still refused.
+	// Report lets targets outside Rules through, marking them Unlisted:
+	// hosts that resolve to private addresses and IP-address targets
+	// included, so report mode never breaks a fetch that unrestricted
+	// network would allow. Loopback, link-local and metadata addresses are
+	// refused in every mode.
 	Report bool
 
 	mu sync.Mutex
@@ -126,6 +128,16 @@ func CheckAddr(addr netip.Addr, rule manifest.EgressRule) error {
 	return nil
 }
 
+func isPrivate(a netip.Addr) bool {
+	a = a.Unmap()
+	for _, p := range private {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Proxy) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
 	if p.Resolve != nil {
 		return p.Resolve(ctx, host)
@@ -159,16 +171,21 @@ func (d *Denied) Error() string { return d.Reason }
 // dial resolves host itself and connects only to an address that passes the
 // checks, so the address checked is the address used.
 func (p *Proxy) dial(ctx context.Context, host string, port int) (conn net.Conn, addr string, unlisted bool, err error) {
-	if _, err := netip.ParseAddr(host); err == nil {
+	literal, isLiteral := netip.ParseAddr(host)
+	if isLiteral == nil && !p.Report {
 		return nil, "", false, &Denied{"IP addresses are not allowed; egress rules name hosts"}
 	}
 	rule, ok := Match(p.Rules, host, port)
+	if isLiteral == nil {
+		ok = false
+	}
 	if !ok {
 		if !p.Report {
 			return nil, "", false, &Denied{fmt.Sprintf("%s:%d is not in the manifest's dependencies.egress", host, port)}
 		}
-		// Report mode: reach it under the default address checks.
-		rule, unlisted = manifest.EgressRule{Host: host, Port: port}, true
+		// Report mode: reach it as unrestricted network would, except the
+		// addresses that are refused in every mode.
+		rule, unlisted = manifest.EgressRule{Host: host, Port: port, Private: true}, true
 	}
 	timeout := p.DialTimeout
 	if timeout == 0 {
@@ -176,8 +193,10 @@ func (p *Proxy) dial(ctx context.Context, host string, port int) (conn net.Conn,
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	addrs, err := p.resolve(ctx, host)
-	if err != nil {
+	var addrs []netip.Addr
+	if isLiteral == nil {
+		addrs = []netip.Addr{literal}
+	} else if addrs, err = p.resolve(ctx, host); err != nil {
 		return nil, "", unlisted, fmt.Errorf("resolve %s: %w", host, err)
 	}
 	var blocked, failed []string
@@ -402,6 +421,9 @@ type Connection struct {
 	Port     int    `json:"port"`
 	Allowed  bool   `json:"allowed"`
 	Unlisted bool   `json:"unlisted,omitempty"`
+	// Private: fetch reached it at a private address, so an allow-list rule
+	// for it needs private: true.
+	Private  bool   `json:"private,omitempty"`
 	Count    int    `json:"count"`
 	BytesOut int64  `json:"bytesOut"`
 	BytesIn  int64  `json:"bytesIn"`
@@ -431,6 +453,9 @@ func Summarize(r io.Reader) (*Summary, error) {
 			s.Connections = append(s.Connections, Connection{Host: e.Host, Port: e.Port, Allowed: e.Allowed, Unlisted: e.Unlisted, Reason: e.Reason})
 		}
 		c := &s.Connections[i]
+		if ap, err := netip.ParseAddrPort(e.Addr); err == nil && isPrivate(ap.Addr()) {
+			c.Private = true
+		}
 		c.Count++
 		c.BytesOut += e.BytesOut
 		c.BytesIn += e.BytesIn
@@ -538,12 +563,15 @@ func (s *Summary) Proposed() []manifest.EgressRule {
 		if !c.Allowed {
 			continue
 		}
+		if _, err := netip.ParseAddr(c.Host); err == nil {
+			continue // an IP address can't be allow-listed; peel reports it
+		}
 		k := fmt.Sprintf("%s:%d", c.Host, c.Port)
 		if seen[k] {
 			continue
 		}
 		seen[k] = true
-		r := manifest.EgressRule{Host: c.Host}
+		r := manifest.EgressRule{Host: c.Host, Private: c.Private}
 		if c.Port != 443 {
 			r.Port = c.Port
 		}
