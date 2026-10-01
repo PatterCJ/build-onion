@@ -9,10 +9,12 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"os/exec"
 	"strings"
@@ -137,17 +139,57 @@ func (k *commandKeypair) SignData(ctx context.Context, data []byte) ([]byte, []b
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", k.c.Script)
 	cmd.Stdin = bytes.NewReader(data)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	stdout, stderr := &limitedBuffer{max: 64 << 10}, &limitedBuffer{max: 4 << 10}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	if err := cmd.Run(); err != nil {
 		return nil, nil, fmt.Errorf("signer command: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	if stdout.overflow {
+		return nil, nil, errors.New("signer command printed more than a signature")
 	}
 	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(stdout.String()))
 	if err != nil || len(sig) == 0 {
 		return nil, nil, errors.New("signer command must print the signature, base64-encoded, on stdout")
 	}
+	// Some KMSs (Azure Key Vault, many HSMs) return r||s rather than DER.
 	if !ecdsa.VerifyASN1(k.c.PublicKey, digest, sig) {
-		return nil, nil, errors.New("the signer command's signature doesn't verify with the given public key")
+		if der, ok := rawToDER(sig, k.c.PublicKey.Curve); ok && ecdsa.VerifyASN1(k.c.PublicKey, digest, der) {
+			sig = der
+		} else {
+			return nil, nil, errors.New("the signer command's signature doesn't verify with the given public key")
+		}
 	}
 	return sig, digest, nil
 }
+
+// rawToDER converts a fixed-size r||s ECDSA signature to ASN.1 DER.
+func rawToDER(sig []byte, curve elliptic.Curve) ([]byte, bool) {
+	size := (curve.Params().BitSize + 7) / 8
+	if len(sig) != 2*size {
+		return nil, false
+	}
+	r, s := new(big.Int).SetBytes(sig[:size]), new(big.Int).SetBytes(sig[size:])
+	der, err := asn1.Marshal(struct{ R, S *big.Int }{r, s})
+	return der, err == nil
+}
+
+// limitedBuffer keeps at most max bytes and notes whether more came. It
+// doesn't embed bytes.Buffer: its ReadFrom would let io.Copy bypass Write.
+type limitedBuffer struct {
+	buf      bytes.Buffer
+	max      int
+	overflow bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if room := b.max - b.buf.Len(); len(p) > room {
+		b.overflow = true
+		if room > 0 {
+			b.buf.Write(p[:room])
+		}
+		return len(p), nil
+	}
+	return b.buf.Write(p)
+}
+
+func (b *limitedBuffer) String() string { return b.buf.String() }

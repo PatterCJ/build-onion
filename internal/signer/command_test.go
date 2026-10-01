@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -42,8 +43,22 @@ func TestHelperSigner(t *testing.T) {
 		fmt.Println("not base64!")
 		os.Exit(0)
 	}
-	sum := sha256.Sum256(data)
-	sig, _ := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	var digest []byte
+	if key.Curve == elliptic.P384() {
+		s := sha512.Sum384(data)
+		digest = s[:]
+	} else {
+		s := sha256.Sum256(data)
+		digest = s[:]
+	}
+	if os.Getenv("SIGNER_RAW") != "" { // r||s, as Azure Key Vault returns
+		r, s, _ := ecdsa.Sign(rand.Reader, key, digest)
+		size := (key.Curve.Params().BitSize + 7) / 8
+		raw := append(r.FillBytes(make([]byte, size)), s.FillBytes(make([]byte, size))...)
+		fmt.Println(base64.StdEncoding.EncodeToString(raw))
+		os.Exit(0)
+	}
+	sig, _ := ecdsa.SignASN1(rand.Reader, key, digest)
 	fmt.Println(base64.StdEncoding.EncodeToString(sig))
 	os.Exit(0)
 }
@@ -51,8 +66,12 @@ func TestHelperSigner(t *testing.T) {
 // newKey writes a throwaway private key to a temp dir (deleted after the
 // test) and returns the signer command for it and its public key.
 func newKey(t *testing.T) (string, *ecdsa.PublicKey) {
+	return newKeyOn(t, elliptic.P256())
+}
+
+func newKeyOn(t *testing.T, curve elliptic.Curve) (string, *ecdsa.PublicKey) {
 	t.Helper()
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, _ := ecdsa.GenerateKey(curve, rand.Reader)
 	der, _ := x509.MarshalECPrivateKey(key)
 	path := filepath.Join(t.TempDir(), "key.pem")
 	os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o600)
@@ -128,5 +147,33 @@ func TestParsePublicKey(t *testing.T) {
 	rder, _ := x509.MarshalPKIXPublicKey(&rk.PublicKey)
 	if _, err := ParsePublicKey(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: rder})); err == nil {
 		t.Error("RSA key accepted")
+	}
+}
+
+// P-384 keys sign with SHA-384, and r||s signatures (Azure Key Vault, HSMs)
+// are accepted alongside DER, for both curves.
+func TestCommandSignerCurvesAndRawSignatures(t *testing.T) {
+	for _, curve := range []elliptic.Curve{elliptic.P256(), elliptic.P384()} {
+		for _, raw := range []bool{false, true} {
+			script, pub := newKeyOn(t, curve)
+			if raw {
+				script = "SIGNER_RAW=1 " + script
+			}
+			d := strings.Repeat("a", 64)
+			out, err := (&Command{Script: script, PublicKey: pub}).Sign(context.Background(), statementFor(t, d))
+			if err != nil {
+				t.Fatalf("%s raw=%v: %v", curve.Params().Name, raw, err)
+			}
+			var b bundle.Bundle
+			b.UnmarshalJSON(out)
+			v, _ := attest.NewKeyVerifier(map[string]*ecdsa.PublicKey{"k": pub})
+			if _, err := v.Verify(attest.Candidate{Bundle: &b}, "sha256:"+d); err != nil {
+				t.Errorf("%s raw=%v: bundle doesn't verify: %v", curve.Params().Name, raw, err)
+			}
+		}
+	}
+	_, pub := newKey(t)
+	if _, err := (&Command{Script: "yes | head -c 200000", PublicKey: pub}).Sign(context.Background(), statementFor(t, strings.Repeat("a", 64))); err == nil || !strings.Contains(err.Error(), "more than a signature") {
+		t.Errorf("endless output: %v", err)
 	}
 }
