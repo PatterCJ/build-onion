@@ -886,3 +886,48 @@ type untrustedKey struct{}
 func (untrustedKey) Verify(attest.Candidate, string) (*attest.Verified, error) {
 	return nil, &attest.UntrustedKey{Hint: "abc"}
 }
+
+// Two releases sealed the same digest with the same key (a reproducible
+// re-release). Their records are grouped by the run they name, so the run
+// matching the claim is checked and the two are never mixed.
+func TestKeySignedRunsAreNotMixed(t *testing.T) {
+	const otherCommit = "9999999999999999999999999999999999999999"
+	const otherRun = "https://github.com/acme/widget/actions/runs/777/attempts/1"
+	build := func(otherFirst bool) Input {
+		w := newWorld()
+		w.key = "acme-kms"
+		in := w.input(t)
+		fv := in.Verifier.(fakeVerifier)
+		var other []attest.Candidate
+		for _, c := range in.Candidates {
+			v := *fv[c.Source]
+			var pred map[string]any
+			json.Unmarshal(v.Statement.Predicate, &pred)
+			if bd, ok := pred["buildDefinition"].(map[string]any); ok {
+				bd["resolvedDependencies"].([]any)[0].(map[string]any)["digest"] = map[string]any{"gitCommit": otherCommit}
+				pred["runDetails"].(map[string]any)["metadata"] = map[string]any{"invocationId": otherRun}
+			}
+			if src, ok := pred["source"].(map[string]any); ok {
+				src["commit"] = otherCommit
+				pred["run"] = map[string]any{"invocationUrl": otherRun}
+			}
+			raw, _ := json.Marshal(pred)
+			v.Statement.Predicate = raw
+			fv["other "+c.Source] = &v
+			other = append(other, attest.Candidate{Source: "other " + c.Source})
+		}
+		if otherFirst {
+			in.Candidates = append(other, in.Candidates...)
+		} else {
+			in.Candidates = append(in.Candidates, other...)
+		}
+		in.Claim.Commit = commit
+		return in
+	}
+	for _, otherFirst := range []bool{true, false} {
+		r := Run(build(otherFirst))
+		if r.Verdict != Passed || !strings.Contains(lines(r), "NOTE seal/other sealing runs") {
+			t.Errorf("otherFirst=%v: %s\n%s", otherFirst, r.Verdict, lines(r))
+		}
+	}
+}

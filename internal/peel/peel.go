@@ -897,16 +897,38 @@ func checkKeySeal(r *Report, keys map[string]bool, certs int) {
 // newest run. Bundles from different runs are never mixed.
 func chooseRun(all []*attest.Verified, in Input) (map[string]*attest.Verified, []string) {
 	byRun := map[string]map[string]*attest.Verified{}
-	for _, v := range all {
-		run := v.Certificate.RunInvocationURI
-		if v.Key != "" {
-			run = "key " + v.Key
-		}
+	add := func(run string, v *attest.Verified) {
 		if byRun[run] == nil {
 			byRun[run] = map[string]*attest.Verified{}
 		}
 		if _, dup := byRun[run][v.Statement.PredicateType]; !dup {
 			byRun[run][v.Statement.PredicateType] = v
+		}
+	}
+	// A key-signed bundle has no certificate naming its run; provenance and
+	// inventory name it in their signed content. A record that names no run
+	// (an SBOM describes bytes, not a run) may pair with any run of its key.
+	var unattached []*attest.Verified
+	for _, v := range all {
+		switch {
+		case v.Key == "":
+			add(v.Certificate.RunInvocationURI, v)
+		case recordRun(v) != "":
+			add("key "+v.Key+" "+recordRun(v), v)
+		default:
+			unattached = append(unattached, v)
+		}
+	}
+	for _, v := range unattached {
+		attached := false
+		for run := range byRun {
+			if strings.HasPrefix(run, "key "+v.Key+" ") {
+				add(run, v)
+				attached = true
+			}
+		}
+		if !attached {
+			add("key "+v.Key, v)
 		}
 	}
 	if len(byRun) == 0 {
@@ -918,7 +940,6 @@ func chooseRun(all []*attest.Verified, in Input) (map[string]*attest.Verified, [
 		for _, v := range set {
 			any = v
 		}
-		cert := any.Certificate
 		b := func(ok bool) int {
 			if ok {
 				return 1
@@ -926,10 +947,17 @@ func chooseRun(all []*attest.Verified, in Input) (map[string]*attest.Verified, [
 			return 0
 		}
 		if any.Key != "" {
-			// No certificate to match a claim against; a verified key is
-			// trusted.
-			return []int{1, 1, 1, len(set), 0}
+			// The claim is matched against the signed records; a verified
+			// key is trusted.
+			commit := ""
+			for _, v := range set {
+				if c := recordCommit(v); c != "" {
+					commit = c
+				}
+			}
+			return []int{b(in.Claim.Commit == "" || commit == in.Claim.Commit), 1, 1, len(set), runNumber(run)}
 		}
+		cert := any.Certificate
 		trusted := false
 		if in.Trust != nil {
 			_, trusted = in.Trust.Trusted(signerRepository(in.Signer.SignerWorkflow), cert.BuildSignerDigest)
@@ -957,6 +985,54 @@ func chooseRun(all []*attest.Verified, in Input) (map[string]*attest.Verified, [
 		}
 	}
 	return byRun[best], others
+}
+
+// recordRun is the run a signed record names: SLSA provenance's invocation,
+// or the inventory's.
+func recordRun(v *attest.Verified) string {
+	var p struct {
+		RunDetails struct {
+			Metadata struct {
+				InvocationID string `json:"invocationId"`
+			} `json:"metadata"`
+		} `json:"runDetails"`
+		Run struct {
+			InvocationURL string `json:"invocationUrl"`
+		} `json:"run"`
+	}
+	if json.Unmarshal(v.Statement.Predicate, &p) != nil {
+		return ""
+	}
+	if p.RunDetails.Metadata.InvocationID != "" {
+		return strings.TrimSuffix(p.RunDetails.Metadata.InvocationID, "/")
+	}
+	return strings.TrimSuffix(p.Run.InvocationURL, "/")
+}
+
+// recordCommit is the source commit a signed record names.
+func recordCommit(v *attest.Verified) string {
+	var p struct {
+		BuildDefinition struct {
+			ResolvedDependencies []struct {
+				Digest map[string]string `json:"digest"`
+			} `json:"resolvedDependencies"`
+		} `json:"buildDefinition"`
+		Source struct {
+			Commit string `json:"commit"`
+		} `json:"source"`
+	}
+	if json.Unmarshal(v.Statement.Predicate, &p) != nil {
+		return ""
+	}
+	if p.Source.Commit != "" {
+		return p.Source.Commit
+	}
+	for _, d := range p.BuildDefinition.ResolvedDependencies {
+		if c := d.Digest["gitCommit"]; c != "" {
+			return c
+		}
+	}
+	return ""
 }
 
 // runNumber is the run ID in a GitHub Actions run URL, so newer runs sort
