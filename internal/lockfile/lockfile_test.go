@@ -278,3 +278,28 @@ func TestInstallScripts(t *testing.T) {
 		t.Error("npm_config_ignore_scripts not honoured")
 	}
 }
+
+// The spellings that turn npm install scripts back on, which an environment
+// setting can't override.
+func TestScriptsReenabled(t *testing.T) {
+	for fetch, want := range map[string]bool{
+		"npm ci":                  false,
+		"npm ci --ignore-scripts": false,
+		"npm ci && npm rebuild":   false,
+		"npm ci && npm rebuild --ignore-scripts=false":  true,
+		"npm rebuild --ignore-scripts false":            true,
+		"npm install --no-ignore-scripts":               true,
+		"npm config set ignore-scripts false && npm ci": true,
+		"npm_config_ignore_scripts=false npm ci":        true,
+		"npm_config_ignore_scripts= npm ci":             true,
+		"NPM_CONFIG_IGNORE_SCRIPTS=0 npm ci":            true,
+		"npm ci --ignore-scripts=true":                  false,
+	} {
+		if got := ScriptsReenabled(fetch, nil); got != want {
+			t.Errorf("%q: re-enabled = %v, want %v", fetch, got, want)
+		}
+	}
+	if !ScriptsReenabled("npm ci", map[string]string{"npm_config_ignore_scripts": "false"}) {
+		t.Error("env re-enable not seen")
+	}
+}

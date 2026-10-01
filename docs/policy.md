@@ -26,12 +26,18 @@ requireBuildInputs: true
 # Refuse to build a change that adds or modifies a binary file (by content)
 # the build can read.
 blockOpaqueInputs: true
-# Refuse to build when a locked dependency would run install scripts during
-# fetch (npm's hasInstallScript) and the fetch step doesn't disable them.
+# Turn off npm dependency install scripts during fetch, and refuse a fetch
+# command that turns them back on.
 blockInstallScripts: true
 ```
 
 Save it as `.build-onion/policy.yml` and both the build and security lines apply it, whether or not the workflows name it (the `policy` input points elsewhere). With no policy file, the defaults above apply.
+
+## Dependency install scripts
+
+npm packages can run code when they are installed (`preinstall`, `install`, `postinstall`). That code runs during fetch, on both the build line and the security line alike, so the independent rebuild can't catch it. The inventory records which locked packages have install scripts (from `package-lock.json`), and `peel` lists them.
+
+With `blockInstallScripts: true`, onion runs the fetch step with `npm_config_ignore_scripts=true`, so no npm invocation in it runs dependency scripts, including `npm rebuild`, and the gate refuses a fetch command that explicitly turns them back on: npm lets a command-line flag override that setting. A fetch step that calls one of the repository's own scripts, which then re-enables them, is the repository's code: list such scripts in `build.sensitive` so changes to them are flagged for review.
 
 ## Report mode: adopt first, enforce later
 

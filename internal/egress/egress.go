@@ -503,10 +503,13 @@ type Record struct {
 	Mode string `json:"mode"`
 	// Snapshot is the digest of the source snapshot fetch ran on, binding
 	// the record to the source it describes.
-	Snapshot   string                `json:"snapshot,omitempty"`
-	Rules      []manifest.EgressRule `json:"rules,omitempty"`
-	ProxyImage string                `json:"proxyImage,omitempty"`
-	Summary    *Summary              `json:"summary,omitempty"`
+	Snapshot string `json:"snapshot,omitempty"`
+	// InstallScriptsDisabled: fetch ran with npm dependency install scripts
+	// turned off by policy, whatever its command did.
+	InstallScriptsDisabled bool                  `json:"installScriptsDisabled,omitempty"`
+	Rules                  []manifest.EgressRule `json:"rules,omitempty"`
+	ProxyImage             string                `json:"proxyImage,omitempty"`
+	Summary                *Summary              `json:"summary,omitempty"`
 }
 
 // Check verifies that a record is consistent with the manifest it claims to

@@ -146,7 +146,15 @@ func evaluate(v *Verdict, p Params, pol *policy.Policy, m *manifest.Manifest) er
 			v.BlockedBy = append(v.BlockedBy, "repository: "+prob)
 		}
 	}
-	if pol.BlockInstallScripts && !lockfile.ScriptsDisabled(m.Dependencies.Fetch, m.Dependencies.Env) {
+	// The fetch step turns install scripts off itself (enforce mode); a
+	// command that explicitly turns them back on would win, so it is
+	// refused. In report mode nothing is turned off, and what the policy
+	// would refuse is recorded.
+	if pol.BlockInstallScripts && !pol.Report() && lockfile.ScriptsReenabled(m.Dependencies.Fetch, m.Dependencies.Env) {
+		v.Blocked = true
+		v.BlockedBy = append(v.BlockedBy, "policy blocks dependency install scripts, but the fetch step turns them back on (an ignore-scripts=false flag or setting); remove it")
+	}
+	if pol.BlockInstallScripts && pol.Report() && !lockfile.ScriptsDisabled(m.Dependencies.Fetch, m.Dependencies.Env) {
 		scripts, err := installScripts(p.SourceDir, m)
 		if err != nil {
 			return err

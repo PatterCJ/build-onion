@@ -194,7 +194,8 @@ func cmdFetch(args []string) error {
 	var rec *egress.Record
 	_, cleanup, err := guarded(s, *snap, "", m, func(dir string) error {
 		var ferr error
-		rec, ferr = builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr, Report: pol.Report()}.Fetch(dir, *cache, m)
+		rec, ferr = builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr, Report: pol.Report(),
+			NoInstallScripts: pol.BlockInstallScripts && !pol.Report()}.Fetch(dir, *cache, m)
 		return ferr
 	})
 	cleanup()

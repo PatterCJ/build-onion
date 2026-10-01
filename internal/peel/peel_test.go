@@ -808,8 +808,13 @@ func TestInstallScriptsAndEgressSource(t *testing.T) {
 		t.Errorf("install scripts not noted:\n%s", lines(r))
 	}
 	w.inv.Build.Fetch = "npm ci --ignore-scripts"
-	if r := Run(w.input(t)); !strings.Contains(lines(r), "the fetch step disabled them") {
-		t.Errorf("disabled scripts not noted:\n%s", lines(r))
+	if r := Run(w.input(t)); !strings.Contains(lines(r), "the fetch command asks npm not to run them") {
+		t.Errorf("command-disabled scripts not noted:\n%s", lines(r))
+	}
+	w.inv.Build.Fetch = "npm ci"
+	w.inv.Egress.InstallScriptsDisabled = true
+	if r := Run(w.input(t)); !strings.Contains(lines(r), "policy turned them off for the whole fetch step") {
+		t.Errorf("policy-disabled scripts not noted:\n%s", lines(r))
 	}
 
 	w = newWorld()

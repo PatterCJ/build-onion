@@ -456,28 +456,30 @@ func TestBlockInstallScripts(t *testing.T) {
 	m := &manifest.Manifest{Dependencies: manifest.Dependencies{Lockfiles: []string{"package-lock.json"}, Fetch: "npm ci"}}
 	pol := policy.Default()
 	pol.BlockInstallScripts = true
-	eval := func(m *manifest.Manifest) *Verdict {
+	eval := func() *Verdict {
 		v, err := Evaluate(Params{SourceDir: f.dir, ManifestPath: "build-onion.yml", Context: Context{Event: "push", Ref: "refs/heads/main"}}, pol, m)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return v
 	}
-	if v := eval(m); !v.Blocked || !strings.Contains(strings.Join(v.BlockedBy, ";"), "esbuild@0.24.0") {
-		t.Errorf("install scripts not blocked: %v", v.BlockedBy)
+	// Enforce mode: the fetch step turns scripts off itself; nothing to block,
+	// unless the fetch command turns them back on.
+	if v := eval(); v.Blocked {
+		t.Errorf("enforce mode blocked at the gate: %v", v.BlockedBy)
 	}
-	m.Dependencies.Fetch = "npm ci --ignore-scripts"
-	if v := eval(m); v.Blocked {
-		t.Errorf("blocked although scripts are disabled: %v", v.BlockedBy)
+	m.Dependencies.Fetch = "npm ci && npm rebuild --ignore-scripts=false"
+	if v := eval(); !v.Blocked || !strings.Contains(strings.Join(v.BlockedBy, ";"), "turns them back on") {
+		t.Errorf("re-enabled scripts not blocked: %v", v.BlockedBy)
 	}
 	m.Dependencies.Fetch = "npm ci"
-	m.Dependencies.Env = map[string]string{"npm_config_ignore_scripts": "true"}
-	if v := eval(m); v.Blocked {
-		t.Errorf("blocked although npm_config_ignore_scripts is set: %v", v.BlockedBy)
+	// Report mode: what the policy would refuse is recorded.
+	pol.Mode = policy.ModeReport
+	if v := eval(); !strings.Contains(strings.Join(v.WouldBlock, ";"), "esbuild@0.24.0") {
+		t.Errorf("report mode didn't record install scripts: %v", v.WouldBlock)
 	}
-	pol.BlockInstallScripts = false
-	m.Dependencies.Env = nil
-	if v := eval(m); v.Blocked {
-		t.Errorf("blocked without the policy: %v", v.BlockedBy)
+	m.Dependencies.Fetch = "npm ci --ignore-scripts"
+	if v := eval(); len(v.WouldBlock) != 0 {
+		t.Errorf("recorded although the fetch disables scripts: %v", v.WouldBlock)
 	}
 }

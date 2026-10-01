@@ -199,3 +199,22 @@ func InstallScripts(pkgs []Package) []string {
 	sort.Strings(out)
 	return out
 }
+
+// reenableRe matches the ways a fetch command can turn npm install scripts
+// back on: npm lets a command-line flag or an inline setting override the
+// environment.
+var reenableRe = regexp.MustCompile(`(?i)(--no-ignore-scripts\b|--ignore-scripts(=|\s+)(false|0)\b|ignore-scripts\s*=?\s*(false|0)\b|npm_config_ignore_scripts=["']?(false|0)?["']?(\s|$))`)
+
+// ScriptsReenabled reports whether a fetch step explicitly turns npm install
+// scripts back on, which no environment setting can prevent.
+func ScriptsReenabled(fetch string, env map[string]string) bool {
+	if reenableRe.MatchString(fetch) {
+		return true
+	}
+	for k, v := range env {
+		if strings.EqualFold(k, "npm_config_ignore_scripts") && v != "true" && v != "1" {
+			return true
+		}
+	}
+	return false
+}

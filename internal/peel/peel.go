@@ -521,8 +521,12 @@ func checkInstallScripts(r *Report, inv *inventory.Inventory) {
 	if len(scripts) == 0 {
 		return
 	}
+	if inv.Egress != nil && inv.Egress.InstallScriptsDisabled {
+		r.grade("inventory", "dependency install scripts", Note, "%d package(s) have install scripts; policy turned them off for the whole fetch step%s", len(scripts), listNote(scripts))
+		return
+	}
 	if lockfile.ScriptsDisabled(inv.Build.Fetch, inv.Build.FetchEnv) {
-		r.grade("inventory", "dependency install scripts", Note, "%d package(s) have install scripts; the fetch step disabled them%s", len(scripts), listNote(scripts))
+		r.grade("inventory", "dependency install scripts", Note, "%d package(s) have install scripts; the fetch command asks npm not to run them%s", len(scripts), listNote(scripts))
 		return
 	}
 	r.grade("inventory", "dependency install scripts", Note, "%d package(s) ran install scripts during fetch%s", len(scripts), listNote(scripts))
