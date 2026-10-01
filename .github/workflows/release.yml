@@ -17,7 +17,26 @@ defaults:
     shell: bash
 
 jobs:
+  # The tag must match the version compiled into onion, so `onion version`
+  # always names the release it came from.
+  version:
+    name: version matches tag
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          got=$(sed -n 's/^var version = "\(.*\)"$/\1/p' cmd/onion/main.go)
+          if [ "v$got" != "$GITHUB_REF_NAME" ]; then
+            echo "::error title=Version mismatch::cmd/onion/main.go says $got, but the tag is $GITHUB_REF_NAME. Bump the version in a pull request and tag again with a new version."
+            exit 1
+          fi
+
   build:
+    needs: version
     permissions:
       contents: read
       id-token: write
