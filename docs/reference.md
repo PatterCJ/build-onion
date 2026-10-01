@@ -145,6 +145,12 @@ builders:
       - tag: v0.1.0
         commit: 0123456789abcdef0123456789abcdef01234567
         added: "2026-10-01"
+  # An enterprise signing key (artifacts sealed with onion attest --signer-command).
+  - name: acme-kms-release
+    key: |
+      -----BEGIN PUBLIC KEY-----
+      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE…
+      -----END PUBLIC KEY-----
 apps:
   - repository: acme/widget
     tagSigners:
@@ -157,6 +163,7 @@ apps:
 | `builders[].repository` | `OWNER/REPO` of the repository whose signing workflow seals artifacts. |
 | `builders[].tagSigners` | SSH public keys allowed to sign its release tags. `onion trust add` requires one. |
 | `builders[].releases` | Trusted releases: `tag`, the 40-hex `commit`, and the date it was `added`. An artifact is accepted only if the commit in its signing certificate is listed here. |
+| `builders[].name`, `builders[].key` | A key builder instead: artifacts sealed with this key (PEM public key, ECDSA P-256 or P-384) are accepted. `peel` reports the seal as signed by that named key; there is no certificate or transparency log, so the repository, commit and run come from the signed records. A key builder has no `repository`, `releases` or `tagSigners`. |
 | `apps[].repository` | Optional. `OWNER/REPO` of a repository whose artifacts this verifier checks. |
 | `apps[].tagSigners` | SSH public keys allowed to sign that repository's release tags. An artifact from a listed repository must have been released from a tag signed by one of them, whatever the repository's own policy allows. A repository not listed is noted, not checked. |
 

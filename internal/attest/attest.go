@@ -213,7 +213,7 @@ func (v *KeyVerifier) Verify(c Candidate, artifactDigest string) (*Verified, err
 	}
 	name, ok := v.names[pk.Hint()]
 	if !ok {
-		return nil, fmt.Errorf("bundle signed with key %s, which is not trusted", pk.Hint())
+		return nil, &UntrustedKey{Hint: pk.Hint()}
 	}
 	res, err := v.sev.Verify(c.Bundle, verify.NewPolicy(verify.WithArtifactDigest(alg, raw), verify.WithKey()))
 	if err != nil {
@@ -231,6 +231,44 @@ func (v *KeyVerifier) Verify(c Candidate, artifactDigest string) (*Verified, err
 		return nil, err
 	}
 	return &Verified{Statement: st, Key: name, Source: c.Source}, nil
+}
+
+// UntrustedKey: a key-signed bundle whose key isn't trusted. Its signature
+// can't be checked, so it is neither valid nor evidence of tampering.
+type UntrustedKey struct{ Hint string }
+
+func (e *UntrustedKey) Error() string {
+	if e.Hint == "" {
+		return "bundle is signed with a key, and no keys are trusted (list them in the trust file)"
+	}
+	return fmt.Sprintf("bundle signed with key %s, which is not trusted", e.Hint)
+}
+
+// KeySigned reports whether a bundle is signed with a key rather than a
+// certificate.
+func (c Candidate) KeySigned() bool {
+	if c.Bundle == nil {
+		return false
+	}
+	vc, err := c.Bundle.VerificationContent()
+	return err == nil && vc.Certificate() == nil && vc.PublicKey() != nil
+}
+
+// Either verifies certificate bundles with Certs and key-signed bundles with
+// Keys (nil if no keys are trusted).
+type Either struct {
+	Certs *Verifier
+	Keys  *KeyVerifier
+}
+
+func (e Either) Verify(c Candidate, artifactDigest string) (*Verified, error) {
+	if c.KeySigned() {
+		if e.Keys == nil {
+			return nil, &UntrustedKey{}
+		}
+		return e.Keys.Verify(c, artifactDigest)
+	}
+	return e.Certs.Verify(c, artifactDigest)
 }
 
 // IdentityMismatch reports whether a verification error means the bundle is

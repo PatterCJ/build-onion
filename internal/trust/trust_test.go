@@ -1,6 +1,11 @@
 package trust
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +71,32 @@ func TestValidate(t *testing.T) {
 	} {
 		if _, err := Load(write(t, body)); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestKeyBuilders(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	pemKey := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	indent := "        " + strings.ReplaceAll(strings.TrimSpace(pemKey), "\n", "\n        ")
+	body := sample + "  - name: acme-kms\n    key: |\n" + indent + "\n"
+	f, err := Load(write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := f.Keys(); len(k) != 1 || k["acme-kms"] == nil || !k["acme-kms"].Equal(&key.PublicKey) {
+		t.Errorf("keys = %v", k)
+	}
+	priv, _ := x509.MarshalECPrivateKey(key)
+	privPEM := "        " + strings.ReplaceAll(strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: priv}))), "\n", "\n        ")
+	for name, b := range map[string]string{
+		"key without name":   sample + "  - key: |\n" + indent + "\n",
+		"private key":        sample + "  - name: oops\n    key: |\n" + privPEM + "\n",
+		"key and repository": sample + "  - name: k\n    repository: a/b\n    key: |\n" + indent + "\n",
+	} {
+		if _, err := Load(write(t, b)); err == nil {
+			t.Errorf("%s accepted", name)
 		}
 	}
 }

@@ -63,6 +63,9 @@ type world struct {
 	inv  inventory.Inventory
 	sbom map[string]any
 	cert certificate.Summary
+	// key, if set, makes every layer key-signed by this trusted key name,
+	// with no certificate.
+	key string
 	// rawInventory, if set, replaces the marshalled inventory predicate.
 	rawInventory []byte
 }
@@ -144,6 +147,9 @@ func (w *world) input(t *testing.T) Input {
 			raw = w.rawInventory
 		}
 		fv[pt] = &attest.Verified{Statement: attest.Statement{PredicateType: pt, Predicate: raw}, Certificate: w.cert}
+		if w.key != "" {
+			fv[pt] = &attest.Verified{Statement: attest.Statement{PredicateType: pt, Predicate: raw}, Key: w.key}
+		}
 		cands = append(cands, attest.Candidate{Source: pt})
 	}
 	return Input{
@@ -827,4 +833,56 @@ func TestInstallScriptsAndEgressSource(t *testing.T) {
 	if r := Run(w.input(t)); r.Verdict != Finding || !strings.Contains(lines(r), "FINDING egress/fetch ran on this source") {
 		t.Errorf("egress from another source:\n%s", lines(r))
 	}
+}
+
+// A run sealed with a trusted enterprise key passes on the key's identity;
+// the certificate checks are replaced, and everything below the seal is
+// checked as usual.
+func TestKeySignedSeal(t *testing.T) {
+	w := newWorld()
+	w.key = "acme-kms-release"
+	r := Run(w.input(t))
+	for _, want := range []string{
+		"PASSED seal/one key signed every layer: acme-kms-release",
+		"PASSED seal/signed by a trusted key: acme-kms-release (from the trust file)",
+		"NOTE seal/key signing: no certificate or transparency log",
+		"PASSED provenance/source commit matches claim",
+		"PASSED inventory/same source commit",
+	} {
+		if !strings.Contains(lines(r), want) {
+			t.Errorf("missing %q:\n%s", want, lines(r))
+		}
+	}
+	if r.Verdict != Passed {
+		t.Errorf("verdict %s:\n%s", r.Verdict, lines(r))
+	}
+	if strings.Contains(lines(r), "signed for claimed repo") || strings.Contains(lines(r), "builder is a trusted release") {
+		t.Errorf("certificate checks ran on a key-signed seal:\n%s", lines(r))
+	}
+	// A claimed commit the signed provenance doesn't name is still caught.
+	in := w.input(t)
+	in.Claim.Commit = strings.Repeat("9", 40)
+	if r := Run(in); r.Verdict != Finding {
+		t.Errorf("wrong commit with a key seal: %s", r.Verdict)
+	}
+}
+
+// A key-signed bundle with an untrusted key is noted, not counted as
+// tampering, and doesn't count as evidence.
+func TestUntrustedKeyBundles(t *testing.T) {
+	in := newWorld().input(t)
+	in.Verifier = untrustedKey{}
+	r := Run(in)
+	if !strings.Contains(lines(r), "NOTE seal/bundles signed with untrusted keys") || strings.Contains(lines(r), "FINDING seal/no invalid bundles") {
+		t.Errorf("untrusted key bundles:\n%s", lines(r))
+	}
+	if r.Verdict != Failed {
+		t.Errorf("no trusted evidence should fail, got %s", r.Verdict)
+	}
+}
+
+type untrustedKey struct{}
+
+func (untrustedKey) Verify(attest.Candidate, string) (*attest.Verified, error) {
+	return nil, &attest.UntrustedKey{Hint: "abc"}
 }
