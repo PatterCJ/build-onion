@@ -164,7 +164,7 @@ func Run(in Input) *Report {
 	repoURL := "https://github.com/" + in.Claim.Repository
 
 	// seal: signatures, identities, and one run behind all of them.
-	verified := map[string]*attest.Verified{}
+	var all []*attest.Verified
 	var invalid, otherSigners []string
 	unrelated := 0
 	for _, c := range in.Candidates {
@@ -175,15 +175,14 @@ func Run(in Input) *Report {
 		v, err := in.Verifier.Verify(c, in.Digest)
 		switch {
 		case err == nil:
-			if _, dup := verified[v.Statement.PredicateType]; !dup {
-				verified[v.Statement.PredicateType] = v
-			}
+			all = append(all, v)
 		case attest.IdentityMismatch(err):
 			otherSigners = append(otherSigners, c.Source)
 		default:
 			invalid = append(invalid, fmt.Sprintf("%s: %v", c.Source, err))
 		}
 	}
+	verified, others := chooseRun(all, in)
 	relevant := len(in.Candidates) - unrelated
 	r.check("seal", "bundles found", relevant > 0, Failed,
 		"%d bundle(s) name this artifact%s", relevant, unrelatedNote(unrelated))
@@ -191,6 +190,10 @@ func Run(in Input) *Report {
 	// is evidence of tampering, not missing evidence.
 	r.check("seal", "no invalid bundles", len(invalid) == 0, Finding,
 		"%d verified against signer %s%s", len(verified), in.Signer.SignerWorkflow, listNote(invalid))
+	if len(others) > 0 {
+		r.grade("seal", "other sealing runs", Note,
+			"this digest was also sealed by %d other run(s), not used: %s", len(others), strings.Join(others, ", "))
+	}
 	if len(otherSigners) > 0 {
 		r.grade("seal", "bundles from other signers", Note,
 			"%d validly signed bundle(s) from other identities were not used%s", len(otherSigners), listNote(otherSigners))
@@ -773,6 +776,90 @@ func declaredFrom(inv *inventory.Inventory) ([]lockfile.Package, []lockfile.Loca
 		local = append(local, lockfile.Local{Ecosystem: "golang", Name: m})
 	}
 	return declared, local
+}
+
+// chooseRun picks the bundles of one sealing run. A reproducible build can
+// seal the same digest in several runs (a release and its re-release); the
+// run checked is the one matching the claim: the claimed commit, then an
+// accepted ref, then a trusted builder, then the most complete set, then the
+// newest run. Bundles from different runs are never mixed.
+func chooseRun(all []*attest.Verified, in Input) (map[string]*attest.Verified, []string) {
+	byRun := map[string]map[string]*attest.Verified{}
+	for _, v := range all {
+		run := v.Certificate.RunInvocationURI
+		if byRun[run] == nil {
+			byRun[run] = map[string]*attest.Verified{}
+		}
+		if _, dup := byRun[run][v.Statement.PredicateType]; !dup {
+			byRun[run][v.Statement.PredicateType] = v
+		}
+	}
+	if len(byRun) == 0 {
+		return map[string]*attest.Verified{}, nil
+	}
+	score := func(run string) []int {
+		set := byRun[run]
+		var any *attest.Verified
+		for _, v := range set {
+			any = v
+		}
+		cert := any.Certificate
+		b := func(ok bool) int {
+			if ok {
+				return 1
+			}
+			return 0
+		}
+		trusted := false
+		if in.Trust != nil {
+			_, trusted = in.Trust.Trusted(signerRepository(in.Signer.SignerWorkflow), cert.BuildSignerDigest)
+		}
+		return []int{
+			b(in.Claim.Commit == "" || cert.SourceRepositoryDigest == in.Claim.Commit),
+			b(len(in.Refs) == 0 || refMatches(in.Refs, cert.SourceRepositoryRef)),
+			b(trusted),
+			len(set),
+			runNumber(run),
+		}
+	}
+	best := ""
+	var bestScore []int
+	for _, run := range sortedKeys(byRun) {
+		sc := score(run)
+		if best == "" || greater(sc, bestScore) {
+			best, bestScore = run, sc
+		}
+	}
+	var others []string
+	for _, run := range sortedKeys(byRun) {
+		if run != best {
+			others = append(others, run)
+		}
+	}
+	return byRun[best], others
+}
+
+// runNumber is the run ID in a GitHub Actions run URL, so newer runs sort
+// higher; 0 if there is none.
+func runNumber(url string) int {
+	m := runIDRe.FindStringSubmatch(url)
+	if m == nil {
+		return 0
+	}
+	n := 0
+	fmt.Sscan(m[1], &n)
+	return n
+}
+
+var runIDRe = regexp.MustCompile(`/actions/runs/([0-9]+)`)
+
+func greater(a, b []int) bool {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] > b[i]
+		}
+	}
+	return false
 }
 
 // signerRepository is OWNER/REPO of OWNER/REPO/.github/workflows/file.yml.
