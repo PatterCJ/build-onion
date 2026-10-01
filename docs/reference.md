@@ -452,6 +452,8 @@ Print the sha256 digest of each file, or with `--oci`, the image manifest digest
 
 These are the commands the reusable workflows run, in order.
 
+**Single-pipeline builds.** Without the security line's independent rebuild, each phase can record what it consumed and produced: pass `--run RUN --link-out FILE` to `source snapshot` (RUN is the run's URL, the same value given to `onion inventory --invocation`, which the seal checks), and `--run RUN --link-in PREVIOUS --link-out FILE` to `fetch` and `build`, then record the image build (which runs outside onion) with `onion link image`. Each phase refuses to start unless its inputs are exactly what the previous phase produced: the source snapshot, the dependency cache, the build's output files and image context. `onion inventory --links DIR` checks the whole chain against the outputs it hashes itself and seals it. The records are unsigned (phases that run build code never hold signing rights) and never replace a check the seal makes itself. `peel` reports the chain, and grades the missing independent rebuild DEGRADED: the records show nothing was swapped between phases, not that a phase computed the right result.
+
 | Command | What it does | Flags |
 |---|---|---|
 | `onion source snapshot` | Hash every tracked file of a clean checkout. | `--source`, `--out` (required) |
@@ -460,6 +462,7 @@ These are the commands the reusable workflows run, in order.
 | `onion fetch` | Run `dependencies.fetch` in the builder, behind the egress proxy when an allow-list is declared or the policy is in report mode (which records instead of denying, and prints an allow-list covering what fetch reached). | `--cache DIR` (required), `--snapshot`, `--egress-out FILE`, `--policy` |
 | `onion build` | Run `build.run` in the builder with no network, on the staged inputs, and collect the outputs. | `--cache DIR`, `--out DIR`, `--snapshot`, `--stage-dir DIR` |
 | `onion compare` | Compare the security line's rebuild with the build line's outputs; exit non-zero if they differ. | `--staged DIR`, `--rebuilt DIR`, `--runner`, `--out` |
-| `onion inventory` | Hash everything and write the inventory predicate to stdout. | `--snapshot`, `--records DIR`, `--repository`, `--commit`, `--tree`, `--files DIR` (all required); `--expect-snapshot`, `--image-archive`, `--scan-records DIR`, `--gate`, `--rebuild`, `--egress`, `--upstream`, `--platform`, `--invocation` |
+| `onion link image` | Record the image build of a single-pipeline build: checks the context and output files are what the build produced, and records the image. | `--oci FILE`, `--context DIR`, `--snapshot`, `--link-in`, `--link-out`, `--run` (all required); `--files DIR` |
+| `onion inventory` | Hash everything and write the inventory predicate to stdout. | `--snapshot`, `--records DIR`, `--repository`, `--commit`, `--tree`, `--files DIR` (all required); `--expect-snapshot`, `--image-archive`, `--scan-records DIR`, `--gate`, `--rebuild`, `--egress`, `--upstream`, `--links DIR`, `--platform`, `--invocation` |
 | `onion proxy` | The egress proxy, run inside its own container by `fetch`. | `--rules JSON`, `--log FILE` (required), `--listen` (default `127.0.0.1:3128`), `--report` |
 | `onion version` | Print the version. | |

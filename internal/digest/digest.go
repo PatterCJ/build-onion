@@ -9,8 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -141,4 +144,55 @@ func OCILayers(p string) ([]string, error) {
 		return nil, fmt.Errorf("%s: image config: %w", p, err)
 	}
 	return config.RootFS.DiffIDs, nil
+}
+
+// Tree is a digest of a directory's contents: every regular file's path,
+// mode and sha256, every symlink's target and every directory, in path
+// order. It identifies what one step hands to the next, such as a
+// dependency cache. It does not depend on timestamps or ownership.
+func Tree(dir string) (string, int, error) {
+	var lines []string
+	files := 0
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case d.Type()&fs.ModeSymlink != 0:
+			target, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			lines = append(lines, fmt.Sprintf("l %s %s", rel, target))
+		case d.IsDir():
+			lines = append(lines, fmt.Sprintf("d %s", rel))
+		case d.Type().IsRegular():
+			sum, err := File(p)
+			if err != nil {
+				return err
+			}
+			files++
+			lines = append(lines, fmt.Sprintf("f %s %04o %s", rel, info.Mode().Perm(), sum))
+		default:
+			return fmt.Errorf("%s: unsupported file type %s", rel, d.Type())
+		}
+		return nil
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	sort.Strings(lines)
+	return Bytes([]byte(strings.Join(lines, "\n"))), files, nil
 }

@@ -14,6 +14,7 @@ import (
 	sigverify "github.com/sigstore/sigstore-go/pkg/verify"
 
 	"github.com/PatterCJ/build-onion/internal/attest"
+	"github.com/PatterCJ/build-onion/internal/chain"
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
@@ -929,5 +930,37 @@ func TestKeySignedRunsAreNotMixed(t *testing.T) {
 		if r.Verdict != Passed || !strings.Contains(lines(r), "NOTE seal/other sealing runs") {
 			t.Errorf("otherFirst=%v: %s\n%s", otherFirst, r.Verdict, lines(r))
 		}
+	}
+}
+
+// A single-pipeline build: its phase records pass, and the missing
+// independent rebuild is degraded with the reason in the report.
+func TestSinglePipelineGrades(t *testing.T) {
+	w := newWorld()
+	snap := digest.Bytes([]byte("snapshot"))
+	w.inv.Source.Snapshot = snap
+	w.inv.Verification = nil
+	s := chain.Link{Step: chain.StepSnapshot, Run: runURL, Snapshot: snap, Products: []chain.Resource{{Name: "source-snapshot", Digest: snap}}}
+	b, _ := chain.Next(s, chain.StepBuild, runURL, snap)
+	b.Materials = []chain.Resource{{Name: "source-snapshot", Digest: snap}}
+	b.Products = []chain.Resource{{Name: "file widget", Digest: artifactDigest}}
+	w.inv.Chain = []chain.Link{s, b}
+	r := Run(w.input(t))
+	for _, want := range []string{
+		"PASSED verification/phase records: snapshot → build: every hand-off matched, run " + runURL,
+		"DEGRADED verification/independent rebuild: not performed: a single-pipeline build",
+		"only a rebuild on separate infrastructure detects that",
+	} {
+		if !strings.Contains(lines(r), want) {
+			t.Errorf("missing %q:\n%s", want, lines(r))
+		}
+	}
+	if r.Verdict != Degraded {
+		t.Errorf("verdict %s", r.Verdict)
+	}
+	// A record that doesn't end in the sealed artifact is a finding.
+	w.inv.Chain[1].Products[0].Digest = digest.Bytes([]byte("other"))
+	if r := Run(w.input(t)); r.Verdict != Finding || !strings.Contains(lines(r), "FINDING verification/phase records") {
+		t.Errorf("tampered chain: %s\n%s", r.Verdict, lines(r))
 	}
 }

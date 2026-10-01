@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/PatterCJ/build-onion/internal/chain"
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
@@ -29,6 +30,8 @@ func cmdSource(args []string) error {
 		fs := flag.NewFlagSet("source snapshot", flag.ExitOnError)
 		dir := fs.String("source", ".", "clean checkout to snapshot")
 		out := fs.String("out", "", "write the snapshot JSON here (required)")
+		linkOut := fs.String("link-out", "", "write the first phase record here (single-pipeline builds)")
+		run := fs.String("run", "", "the CI run, shared by every phase record (with --link-out)")
 		fs.Parse(args[1:])
 		if *out == "" {
 			return errors.New("--out is required")
@@ -39,6 +42,15 @@ func cmdSource(args []string) error {
 		}
 		if err := writeJSON(*out, snap); err != nil {
 			return err
+		}
+		if *linkOut != "" {
+			if *run == "" {
+				return errors.New("--link-out needs --run")
+			}
+			if err := chain.Write(*linkOut, chain.Link{Step: chain.StepSnapshot, Run: *run, Snapshot: snap.Digest,
+				Products: []chain.Resource{{Name: "source-snapshot", Digest: snap.Digest}}}); err != nil {
+				return err
+			}
 		}
 		fmt.Println(snap.Digest)
 		return nil
