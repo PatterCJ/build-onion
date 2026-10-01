@@ -59,6 +59,7 @@ Usage:
   onion digest    [--oci] PATH...
   onion attest    (--subject NAME@sha256:HEX | --subject-checksums FILE) (--predicate FILE --predicate-type URI | --provenance github) --out FILE
   onion push-bundles --image NAME@sha256:HEX --bundles DIR
+  onion image-files (--oci FILE | --image NAME@sha256:HEX) [--base REF] [--out FILE]
   onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
   onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--baseline ARTIFACT] [--trust FILE] [--attestations auto|github|registry] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
   onion trust     add --trust FILE --tag TAG [--repo OWNER/REPO]
@@ -79,6 +80,7 @@ func main() {
 		"upstream":     cmdUpstream,
 		"attest":       cmdAttest,
 		"push-bundles": cmdPushBundles,
+		"image-files":  cmdImageFiles,
 		"trust":        cmdTrust,
 		"proxy":        cmdProxy,
 		"fetch":        cmdFetch,
