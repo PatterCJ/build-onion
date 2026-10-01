@@ -7,10 +7,13 @@ import (
 	"strings"
 )
 
-var segmentRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+var (
+	segmentRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+	hostRe    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:[0-9]{1,5})?$`)
+)
 
 // URL returns the canonical https URL for a repository given as OWNER/REPO
-// (on GitHub), HOST/PATH (for example gitlab.com/group/subgroup/project), or
+// (on GitHub), HOST[:PORT]/PATH (for example gitlab.com/group/project), or
 // https://HOST/PATH. A trailing ".git" or "/" is dropped. GitHub owners
 // can't contain dots, so a first segment with one is always a host.
 func URL(s string) (string, error) {
@@ -23,8 +26,8 @@ func URL(s string) (string, error) {
 	}
 	parts[0] = strings.ToLower(parts[0])
 	host, path := parts[0], parts[1:]
-	ok := strings.Contains(host, ".") && len(path) >= 2
-	for _, p := range parts {
+	ok := hostRe.MatchString(host) && len(path) >= 2
+	for _, p := range path {
 		ok = ok && segmentRe.MatchString(p) && !strings.Contains(p, "..")
 	}
 	if host == "github.com" && len(path) != 2 {

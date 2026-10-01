@@ -11,6 +11,7 @@ func TestURL(t *testing.T) {
 		"https://gitlab.com/PatterCJ/onion.git":    "https://gitlab.com/PatterCJ/onion",
 		"gitlab.example.com/a/b/c":                 "https://gitlab.example.com/a/b/c",
 		"https://GitHub.com/a/b":                   "https://github.com/a/b",
+		"gitlab.corp.example:8443/team/app":        "https://gitlab.corp.example:8443/team/app",
 	} {
 		if got, err := URL(in); err != nil || got != want {
 			t.Errorf("URL(%q) = %q, %v; want %q", in, got, err, want)
@@ -20,7 +21,7 @@ func TestURL(t *testing.T) {
 		"", "onion", "PatterCJ/build-onion/extra", "github.com/a/b/c", "gitlab.com/onion",
 		"http://gitlab.com/a/b", "gitlab.com/a/../b", "gitlab.com/a/b?x=1", "gitlab.com//a/b",
 		"https://gitlab.com/a/b#frag", "gitlab.com/a/.b", "user@gitlab.com/a/b",
-		"https://GitHub.com/a/b/c",
+		"https://GitHub.com/a/b/c", "gitlab.com:x/a/b", "-gitlab.com/a/b", "gitlab..com/a/b",
 	} {
 		if got, err := URL(bad); err == nil {
 			t.Errorf("URL(%q) = %q, want an error", bad, got)

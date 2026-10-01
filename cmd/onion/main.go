@@ -440,7 +440,7 @@ func cmdInventory(args []string) error {
 	var p inventory.Params
 	fs.StringVar(&p.SourceDir, "source", ".", "checkout of the commit being built")
 	fs.StringVar(&p.ManifestPath, "manifest", "build-onion.yml", "manifest path, relative to --source")
-	fs.StringVar(&p.Repository, "repository", "", "source repository URL")
+	fs.StringVar(&p.Repository, "repository", "", "source repository URL, e.g. https://gitlab.com/group/project")
 	fs.StringVar(&p.Commit, "commit", "", "source commit SHA")
 	fs.StringVar(&p.Tree, "tree", "", "source tree SHA")
 	fs.StringVar(&p.FilesDir, "files", "", "directory of built output files")
@@ -459,6 +459,10 @@ func cmdInventory(args []string) error {
 	fs.Parse(args)
 	if p.Repository == "" || p.Commit == "" || p.Tree == "" || p.FilesDir == "" || *snapPath == "" || *records == "" {
 		return errors.New("--repository, --commit, --tree, --files, --snapshot and --records are required")
+	}
+	// Recorded as given, once peel can parse it.
+	if _, err := repoid.URL(p.Repository); err != nil {
+		return fmt.Errorf("--repository: %w", err)
 	}
 	var err error
 	if p.Snapshot, err = loadSnapshot(*snapPath, *expect); err != nil {
