@@ -33,6 +33,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/peel"
 	"github.com/PatterCJ/build-onion/internal/policy"
+	repoid "github.com/PatterCJ/build-onion/internal/repo"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/trust"
 	"github.com/PatterCJ/build-onion/internal/upstream"
@@ -62,7 +63,7 @@ Usage:
   onion push-bundles --image NAME@sha256:HEX --bundles DIR
   onion image-files (--oci FILE | --image NAME@sha256:HEX) [--base REF] [--out FILE]
   onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
-  onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--baseline ARTIFACT] [--trust FILE] [--attestations auto|github|registry] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
+  onion peel      ARTIFACT --repo REPO [--commit SHA] [--ref REFS] [--baseline ARTIFACT] [--trust FILE] [--attestations auto|github|registry] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
   onion trust     add --trust FILE --tag TAG [--repo OWNER/REPO]
   onion version
 `
@@ -514,7 +515,7 @@ func cmdInventory(args []string) error {
 
 func cmdPeel(args []string) error {
 	fs := flag.NewFlagSet("peel", flag.ExitOnError)
-	repo := fs.String("repo", "", "OWNER/REPO the artifact claims to be built from (required)")
+	repo := fs.String("repo", "", "repository the artifact claims to be built from: OWNER/REPO on GitHub, or HOST/PATH (required)")
 	commit := fs.String("commit", "", "commit the artifact claims to be built from")
 	signer := fs.String("signer", defaultSigner, "reusable workflow allowed to sign (OWNER/REPO/PATH)")
 	signerRef := fs.String("signer-ref", "", "exact signer ref, e.g. refs/tags/v1.0.0 (default: any)")
@@ -538,7 +539,10 @@ func cmdPeel(args []string) error {
 		artifact = fs.Arg(0)
 	}
 	if artifact == "" || *repo == "" {
-		return errors.New("usage: onion peel ARTIFACT --repo OWNER/REPO [flags]")
+		return errors.New("usage: onion peel ARTIFACT --repo REPO [flags]")
+	}
+	if _, err := repoid.URL(*repo); err != nil {
+		return fmt.Errorf("--repo: %w", err)
 	}
 	if *rebuild && *source == "" {
 		return errors.New("--rebuild needs --source")
@@ -697,11 +701,26 @@ func findAttestations(mode, repo, artifact, d string, isOCI bool) ([]attest.Cand
 	if mode == "registry" && !isImage {
 		return nil, fmt.Errorf("--attestations registry needs an image reference, not %s", artifact)
 	}
+	// GitHub keeps attestations only for its own repositories.
+	u, err := repoid.URL(repo)
+	if err != nil {
+		return nil, err
+	}
+	onGitHub := repoid.IsGitHub(u)
+	if mode == "github" && !onGitHub {
+		return nil, fmt.Errorf("--attestations github: %s is not a GitHub repository", u)
+	}
+	if mode == "auto" && !onGitHub {
+		if !isImage {
+			return nil, fmt.Errorf("%s is not on GitHub, so its bundles are in the image's registry or a directory: pass an image reference or --bundles", u)
+		}
+		mode = "registry"
+	}
 	var out []attest.Candidate
 	var failures []error
 	used := 0
 	if mode == "auto" || mode == "github" {
-		c, err := attest.FromGitHub(context.Background(), repo, d, os.Getenv("GITHUB_TOKEN"))
+		c, err := attest.FromGitHub(context.Background(), strings.TrimPrefix(u, "https://github.com/"), d, os.Getenv("GITHUB_TOKEN"))
 		if err != nil {
 			failures = append(failures, fmt.Errorf("GitHub attestations: %w", err))
 		} else {

@@ -92,7 +92,7 @@ $ onion peel ghcr.io/acme/widget@sha256:… --repo acme/widget --ref 'refs/heads
 | Argument | Meaning |
 |---|---|
 | `ARTIFACT` | A file, an image reference (a tag is resolved to its digest once), or an OCI tarball with `--oci`. |
-| `--repo OWNER/REPO` | The repository the artifact claims to come from. Required. |
+| `--repo REPO` | The repository the artifact claims to come from: `OWNER/REPO` on GitHub, or `HOST/PATH` (for example `gitlab.com/group/project`). Required. |
 | `--commit SHA` | Require a specific commit. |
 | `--ref REFS` | Require the source ref to match one of these globs. |
 | `--source DIR` | Also check a local checkout against the signed snapshot. |

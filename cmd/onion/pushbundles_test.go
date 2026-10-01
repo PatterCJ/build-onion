@@ -73,6 +73,17 @@ func TestPushBundlesAndFindAttestations(t *testing.T) {
 	if _, err := findAttestations("registry", "acme/widget", "testdata/v0.2.1-onion-provenance.json", d.String(), false); err == nil {
 		t.Error("registry source accepted a local file")
 	}
+	// A repository on another host: auto means its registry, and GitHub's
+	// API is never asked.
+	if cands, err := findAttestations("auto", "gitlab.com/acme/widget", ref, d.String(), false); err != nil || len(cands) != 1 {
+		t.Errorf("auto for a GitLab repository: %d candidate(s), %v", len(cands), err)
+	}
+	if _, err := findAttestations("github", "gitlab.com/acme/widget", ref, d.String(), false); err == nil {
+		t.Error("GitHub attestations asked for a GitLab repository")
+	}
+	if _, err := findAttestations("auto", "gitlab.com/acme/widget", "testdata/v0.2.1-onion-provenance.json", d.String(), false); err == nil {
+		t.Error("a local file for a GitLab repository, with nowhere to find bundles, accepted")
+	}
 
 	empty := t.TempDir()
 	if err := cmdPushBundles([]string{"--image", ref, "--bundles", empty}); err == nil {

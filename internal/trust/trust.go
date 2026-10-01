@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/PatterCJ/build-onion/internal/repo"
 	"github.com/PatterCJ/build-onion/internal/signer"
 	"github.com/PatterCJ/build-onion/internal/tagsig"
 )
@@ -32,7 +33,7 @@ type File struct {
 
 // App is one repository whose artifacts the verifier accepts.
 type App struct {
-	Repository string   `yaml:"repository"` // OWNER/REPO
+	Repository string   `yaml:"repository"` // OWNER/REPO on GitHub, or HOST/PATH
 	TagSigners []string `yaml:"tagSigners"`
 }
 
@@ -118,13 +119,14 @@ func (f *File) Validate() error {
 	}
 	seenApp := map[string]bool{}
 	for _, a := range f.Apps {
-		if !repoRe.MatchString(a.Repository) {
-			errs = append(errs, fmt.Errorf("app repository %q must be OWNER/REPO", a.Repository))
+		u, err := repo.URL(a.Repository)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("app: %w", err))
 		}
-		if seenApp[strings.ToLower(a.Repository)] {
+		if seenApp[strings.ToLower(u)] {
 			errs = append(errs, fmt.Errorf("app %s listed twice", a.Repository))
 		}
-		seenApp[strings.ToLower(a.Repository)] = true
+		seenApp[strings.ToLower(u)] = true
 		if len(a.TagSigners) == 0 {
 			errs = append(errs, fmt.Errorf("app %s: tagSigners is empty", a.Repository))
 		}
@@ -135,10 +137,10 @@ func (f *File) Validate() error {
 	return errors.Join(errs...)
 }
 
-// App returns the entry for a repository, matched case-insensitively.
-func (f *File) App(repo string) *App {
+// App returns the entry for a repository, however it is written.
+func (f *File) App(name string) *App {
 	for i := range f.Apps {
-		if strings.EqualFold(f.Apps[i].Repository, repo) {
+		if repo.Same(f.Apps[i].Repository, name) {
 			return &f.Apps[i]
 		}
 	}

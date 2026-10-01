@@ -30,6 +30,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/policy"
+	repoid "github.com/PatterCJ/build-onion/internal/repo"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/tagsig"
 	"github.com/PatterCJ/build-onion/internal/trust"
@@ -163,7 +164,10 @@ type Input struct {
 func Run(in Input) *Report {
 	r := &Report{Artifact: in.Artifact, Digest: in.Digest}
 	defer r.finish()
-	repoURL := "https://github.com/" + in.Claim.Repository
+	repoURL, err := repoid.URL(in.Claim.Repository)
+	if err != nil {
+		r.grade("seal", "claimed repository", Failed, "%v", err)
+	}
 
 	// seal: signatures, identities, and one run behind all of them.
 	var all []*attest.Verified
@@ -236,7 +240,7 @@ func Run(in Input) *Report {
 			break
 		}
 		cert := verified[pt].Certificate
-		r.check("seal", shortType(pt)+" signed for claimed repo", cert.SourceRepositoryURI == repoURL, Finding,
+		r.check("seal", shortType(pt)+" signed for claimed repo", strings.EqualFold(cert.SourceRepositoryURI, repoURL), Finding,
 			"certificate source repo %q, claimed %q", cert.SourceRepositoryURI, repoURL)
 		if in.Claim.Commit != "" {
 			r.check("seal", shortType(pt)+" signed for claimed commit", cert.SourceRepositoryDigest == in.Claim.Commit, Finding,
@@ -285,7 +289,7 @@ func Run(in Input) *Report {
 		r.check("provenance", "builder is build-onion", strings.HasPrefix(rd.Builder.ID, builderPrefix), Finding, "builder.id %s", rd.Builder.ID)
 		r.check("provenance", "hosted runner", bd.InternalParameters.GitHub.RunnerEnvironment == "github-hosted", Finding,
 			"runner_environment %q (SLSA L3 requires a hosted build platform)", bd.InternalParameters.GitHub.RunnerEnvironment)
-		r.check("provenance", "source repository", bd.ExternalParameters.Workflow.Repository == repoURL, Finding,
+		r.check("provenance", "source repository", strings.EqualFold(bd.ExternalParameters.Workflow.Repository, repoURL), Finding,
 			"workflow repository %s", bd.ExternalParameters.Workflow.Repository)
 		ref := bd.ExternalParameters.Workflow.Ref
 		if len(in.Refs) == 0 {
@@ -310,7 +314,7 @@ func Run(in Input) *Report {
 		haveInv = true
 		r.inv = &inv
 		// A key may seal for many repositories; the record says which one.
-		r.check("inventory", "claimed repository", strings.EqualFold(inv.Source.Repository, repoURL), Finding,
+		r.check("inventory", "claimed repository", repoURL != "" && repoid.Same(inv.Source.Repository, repoURL), Finding,
 			"inventory %s, claimed %s", inv.Source.Repository, repoURL)
 		r.check("inventory", "same source commit", inv.Source.Commit == in.Claim.Commit && in.Claim.Commit != "", Finding,
 			"inventory %s, provenance %s", inv.Source.Commit, in.Claim.Commit)
@@ -402,7 +406,7 @@ type provenance struct {
 
 func (p *provenance) sourceCommit(repoURL string) string {
 	for _, d := range p.BuildDefinition.ResolvedDependencies {
-		if strings.HasPrefix(d.URI, "git+"+repoURL+"@") {
+		if p := "git+" + repoURL + "@"; len(d.URI) > len(p) && strings.EqualFold(d.URI[:len(p)], p) {
 			return d.Digest["gitCommit"]
 		}
 	}

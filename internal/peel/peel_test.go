@@ -876,6 +876,23 @@ func TestKeySignedSeal(t *testing.T) {
 	if r := Run(in); !strings.Contains(lines(r), "FINDING inventory/claimed repository") {
 		t.Errorf("another repository's key-signed inventory, no usable provenance:\n%s", lines(r))
 	}
+	// A repository on another host, named as the inventory names it.
+	w = newWorld()
+	w.key = "acme-kms-release"
+	w.inv.Source.Repository = "https://gitlab.com/acme/widget"
+	in = w.input(t)
+	in.Claim.Repository = "gitlab.com/acme/widget"
+	if r := Run(in); !strings.Contains(lines(r), "PASSED inventory/claimed repository: inventory https://gitlab.com/acme/widget") {
+		t.Errorf("GitLab repository:\n%s", lines(r))
+	}
+	in.Claim.Repository = "acme/widget" // same path, on GitHub
+	if r := Run(in); r.Verdict != Finding {
+		t.Errorf("same path on another host: %s", r.Verdict)
+	}
+	in.Claim.Repository = "not a repo"
+	if r := Run(in); r.Verdict == Passed || !strings.Contains(lines(r), "seal/claimed repository") {
+		t.Errorf("invalid claimed repository: %s\n%s", r.Verdict, lines(r))
+	}
 	w = newWorld()
 	w.key = "acme-kms-release"
 	// A claimed commit the signed provenance doesn't name is still caught.

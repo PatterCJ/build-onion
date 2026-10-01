@@ -164,7 +164,7 @@ apps:
 | `builders[].tagSigners` | SSH public keys allowed to sign its release tags. `onion trust add` requires one. |
 | `builders[].releases` | Trusted releases: `tag`, the 40-hex `commit`, and the date it was `added`. An artifact is accepted only if the commit in its signing certificate is listed here. |
 | `builders[].name`, `builders[].key` | A key builder instead: artifacts sealed with this key (PEM public key, ECDSA P-256 or P-384) are accepted. `peel` reports the seal as signed by that named key; there is no certificate or transparency log, so the repository, commit and run come from the signed records. A key builder has no `repository`, `releases` or `tagSigners`. |
-| `apps[].repository` | Optional. `OWNER/REPO` of a repository whose artifacts this verifier checks. |
+| `apps[].repository` | Optional. A repository whose artifacts this verifier checks: `OWNER/REPO` on GitHub, or `HOST/PATH`. |
 | `apps[].tagSigners` | SSH public keys allowed to sign that repository's release tags. An artifact from a listed repository must have been released from a tag signed by one of them, whatever the repository's own policy allows. A repository not listed is noted, not checked. |
 
 ## Reusable workflows
@@ -289,14 +289,14 @@ Commands you run yourself: [`peel`](#onion-peel), [`trust add`](#onion-trust-add
 Verify an artifact against its signed record. See [Verifying an artifact](../README.md#verifying-an-artifact) for the report.
 
 ```sh
-onion peel ARTIFACT --repo OWNER/REPO [flags]
+onion peel ARTIFACT --repo REPO [flags]
 ```
 
 `ARTIFACT` is a file, an image reference (a tag is resolved to its digest once), or an OCI tarball with `--oci`. It can come before or after the flags.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--repo OWNER/REPO` | *(required)* | Repository the artifact claims to come from. |
+| `--repo REPO` | *(required)* | Repository the artifact claims to come from: `OWNER/REPO` on GitHub, or `HOST/PATH` such as `gitlab.com/group/project`. The inventory must name it. |
 | `--commit SHA` | | Require this source commit. |
 | `--ref REFS` | | Comma-separated ref globs the artifact must be built from, e.g. `refs/heads/main,refs/tags/v*`. |
 | `--trust FILE` | | Accept only artifacts sealed by a build-onion release listed in this [trust file](#trust-file). |
@@ -308,7 +308,7 @@ onion peel ARTIFACT --repo OWNER/REPO [flags]
 | `--packages` | `false` | List every package in the artifact with its lockfile and upstream outcomes. |
 | `--json` | `false` | Print the full report as JSON. |
 | `--allow-degraded` | `false` | Exit 0 when the verdict is DEGRADED or UNSUPPORTED. |
-| `--attestations SOURCE` | `auto` | Where to find the bundles: `registry` (stored next to the image), `github` (GitHub's attestations API), or `auto` (both for an image; GitHub for a file). In `auto`, a source that can't be reached is reported and the other is used. |
+| `--attestations SOURCE` | `auto` | Where to find the bundles: `registry` (stored next to the image), `github` (GitHub's attestations API), or `auto` (both for an image; GitHub for a file). In `auto`, a source that can't be reached is reported and the other is used. For a repository not on GitHub, `auto` means the registry. |
 | `--bundles DIR` | | Read Sigstore bundles from this directory instead. |
 | `--baseline-bundles DIR` | | The same, for `--baseline`. |
 | `--signer OWNER/REPO/PATH` | `PatterCJ/build-onion/.github/workflows/onion-verify.yml` | The workflow allowed to sign. Change it if you call the workflows from a fork or wrapper. |
