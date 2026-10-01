@@ -117,7 +117,7 @@ repository:
 | `release.refs` | `refs/heads/main`, `refs/tags/v*` | Refs (globs) whose builds may be sealed. Everything else builds and is checked, but isn't signed or published. |
 | `release.events` | `push`, `workflow_dispatch`, `release` | Events whose builds may be sealed. `pull_request_target` and `workflow_run` are always refused. |
 | `release.tagSigners` | | SSH public keys (authorized_keys form). When set, a tag release builds only if its tag is signed by one of them and points at the commit being built. |
-| `sensitivePaths` | | Globs added to the build-configuration files the gate records changes to. Always included: `.github/**`, `CODEOWNERS`, the manifest, the policy, the lockfiles, the Dockerfile, and `build.sensitive`. |
+| `sensitivePaths` | | Globs added to the build-configuration files the gate records changes to. Always included: `.github/**`, `.gitlab-ci.yml`, `.gitlab/**`, `CODEOWNERS`, the manifest, the policy, the lockfiles, the Dockerfile, and `build.sensitive`. |
 | `sensitivePresets` | | Named sets of build-system files: `autotools`, `bazel`, `cmake`, `docker`, `go`, `gradle`, `make`, `maven`, `meson`, `node`, `python`, `rust`. |
 | `requireBuildInputs` | `false` | Refuse to build a manifest without `build.inputs`. |
 | `blockOpaqueInputs` | `false` | Refuse to build a change that adds or modifies a binary file (by content) the build can read. |
@@ -164,7 +164,7 @@ apps:
 | `builders[].tagSigners` | SSH public keys allowed to sign its release tags. `onion trust add` requires one. |
 | `builders[].releases` | Trusted releases: `tag`, the 40-hex `commit`, and the date it was `added`. An artifact is accepted only if the commit in its signing certificate is listed here. |
 | `builders[].name`, `builders[].key` | A key builder instead: artifacts sealed with this key (PEM public key, ECDSA P-256 or P-384) are accepted. `peel` reports the seal as signed by that named key; there is no certificate or transparency log, so the repository, commit and run come from the signed records. A key builder has no `repository`, `releases` or `tagSigners`. |
-| `apps[].repository` | Optional. `OWNER/REPO` of a repository whose artifacts this verifier checks. |
+| `apps[].repository` | Optional. A repository whose artifacts this verifier checks: `OWNER/REPO` on GitHub, or `HOST/PATH`. |
 | `apps[].tagSigners` | SSH public keys allowed to sign that repository's release tags. An artifact from a listed repository must have been released from a tag signed by one of them, whatever the repository's own policy allows. A repository not listed is noted, not checked. |
 
 ## Reusable workflows
@@ -289,14 +289,14 @@ Commands you run yourself: [`peel`](#onion-peel), [`trust add`](#onion-trust-add
 Verify an artifact against its signed record. See [Verifying an artifact](../README.md#verifying-an-artifact) for the report.
 
 ```sh
-onion peel ARTIFACT --repo OWNER/REPO [flags]
+onion peel ARTIFACT --repo REPO [flags]
 ```
 
 `ARTIFACT` is a file, an image reference (a tag is resolved to its digest once), or an OCI tarball with `--oci`. It can come before or after the flags.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--repo OWNER/REPO` | *(required)* | Repository the artifact claims to come from. |
+| `--repo REPO` | *(required)* | Repository the artifact claims to come from: `OWNER/REPO` on GitHub, or `HOST/PATH` such as `gitlab.com/group/project`. The inventory must name it. |
 | `--commit SHA` | | Require this source commit. |
 | `--ref REFS` | | Comma-separated ref globs the artifact must be built from, e.g. `refs/heads/main,refs/tags/v*`. |
 | `--trust FILE` | | Accept only artifacts sealed by a build-onion release listed in this [trust file](#trust-file). |
@@ -308,7 +308,7 @@ onion peel ARTIFACT --repo OWNER/REPO [flags]
 | `--packages` | `false` | List every package in the artifact with its lockfile and upstream outcomes. |
 | `--json` | `false` | Print the full report as JSON. |
 | `--allow-degraded` | `false` | Exit 0 when the verdict is DEGRADED or UNSUPPORTED. |
-| `--attestations SOURCE` | `auto` | Where to find the bundles: `registry` (stored next to the image), `github` (GitHub's attestations API), or `auto` (both for an image; GitHub for a file). In `auto`, a source that can't be reached is reported and the other is used. |
+| `--attestations SOURCE` | `auto` | Where to find the bundles: `registry` (stored next to the image), `github` (GitHub's attestations API), or `auto` (both for an image; GitHub for a file). In `auto`, a source that can't be reached is reported and the other is used. For a repository not on GitHub, `auto` means the registry. |
 | `--bundles DIR` | | Read Sigstore bundles from this directory instead. |
 | `--baseline-bundles DIR` | | The same, for `--baseline`. |
 | `--signer OWNER/REPO/PATH` | `PatterCJ/build-onion/.github/workflows/onion-verify.yml` | The workflow allowed to sign. Change it if you call the workflows from a fork or wrapper. |
@@ -339,7 +339,7 @@ It fetches the tag with `git` and requires a signature from one of the builder's
 
 ### `onion validate`
 
-Check a manifest, its pins and the repository's workflows.
+Check a manifest, its pins and the repository's pipeline definitions: every action in `.github/workflows` pinned by commit SHA, and every image and include in `.gitlab-ci.yml` pinned (images by digest; `project` includes and components by commit SHA; `remote` includes by `integrity`; `local` includes are files at the same commit; `template` includes can't be pinned).
 
 ```sh
 onion validate [--source DIR] [--manifest FILE] [--github-output FILE]
@@ -391,7 +391,7 @@ onion record scan --name NAME --status STATUS --subject-kind KIND --subject DIGE
 | `--report-url URL` | Where the report is kept. |
 | `--out FILE` | Record to write (required). |
 
-`record job` (`--name`, `--runner`, repeatable `--tool name=version`), `record workflow` (`--role`, `--ref`, `--file`) and `record build-onion` (`--repository`, `--commit`, `--cli-digest`) record the pipeline itself; each takes `--out`.
+`record job` (`--name`, `--runner`, repeatable `--tool name=version`), `record workflow` (`--role`, `--ref`, `--file`, and `--format gitlab-ci` for a GitLab pipeline definition) and `record build-onion` (`--repository`, `--commit`, `--cli-digest`) record the pipeline itself; each takes `--out`.
 
 ### `onion attest`
 
@@ -408,7 +408,7 @@ onion attest --subject-checksums files.sha256 --provenance github --out provenan
 | `--subject NAME@sha256:HEX` | | A subject; repeatable. |
 | `--subject-checksums FILE` | | Subjects from `sha256sum` output. |
 | `--predicate FILE`, `--predicate-type URI` | | The predicate to sign. |
-| `--provenance github` | | Generate SLSA v1 provenance for the current GitHub Actions job instead, in the same form as GitHub's own. |
+| `--provenance CI` | | Generate SLSA v1 provenance for the current job instead of `--predicate`. `github`: the GitHub Actions job, in the same form as GitHub's own. `gitlab`: the GitLab CI pipeline, from its predefined variables (project, ref, commit, pipeline URL, whether the ref is protected, the pipeline definition's path); needs `--signer-command`. |
 | `--token SOURCE` | `github` | Where the OIDC token comes from: `github` (the job needs `id-token: write`), or `env:NAME` for a token another CI provides. |
 | `--fulcio URL`, `--rekor URL` | public-good Sigstore | Sigstore instances to use. |
 | `--trusted-root FILE` | *(public-good via TUF)* | Trusted root the new bundle is checked against before it is written. Required with a private `--fulcio` or `--rekor`. |

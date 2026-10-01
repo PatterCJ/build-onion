@@ -21,6 +21,9 @@ builders:
     releases: []
 `
 
+// key is a tag signer in authorized_keys form, quoted for a YAML flow list.
+const key = `"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFJ3KAvvJbVkYNEbTcSipRyJVpjRqqSJJrGLeG2862oF maintainer"`
+
 func write(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "trust.yml")
@@ -63,15 +66,24 @@ func TestAppendAndTrusted(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	for name, body := range map[string]string{
-		"bad version":  strings.Replace(sample, "trust/v1", "trust/v0", 1),
-		"bad key":      strings.Replace(sample, "ssh-ed25519 AAAA", "ssh-ed25519 !!!", 1),
-		"short commit": strings.Replace(sample, "releases: []", "releases: [{tag: v1, commit: abc}]", 1),
-		"unknown key":  sample + "extra: 1\n",
-		"bad repo":     strings.Replace(sample, "PatterCJ/build-onion", "not a repo", 1),
+		"bad version":                 strings.Replace(sample, "trust/v1", "trust/v0", 1),
+		"bad key":                     strings.Replace(sample, "ssh-ed25519 AAAA", "ssh-ed25519 !!!", 1),
+		"short commit":                strings.Replace(sample, "releases: []", "releases: [{tag: v1, commit: abc}]", 1),
+		"unknown key":                 sample + "extra: 1\n",
+		"bad repo":                    strings.Replace(sample, "PatterCJ/build-onion", "not a repo", 1),
+		"app twice, written two ways": sample + "apps:\n  - repository: gitlab.com/acme/app\n    tagSigners: [" + key + "]\n  - repository: https://GitLab.com/acme/app\n    tagSigners: [" + key + "]\n",
+		"bad app repo":                sample + "apps:\n  - repository: gitlab.com/app\n    tagSigners: [" + key + "]\n",
 	} {
 		if _, err := Load(write(t, body)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	f, err := Load(write(t, sample+"apps:\n  - repository: gitlab.com/acme/group/app\n    tagSigners: ["+key+"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.App("https://gitlab.com/acme/group/app") == nil || f.App("acme/group") != nil || f.App("github.com/acme/group/app") != nil {
+		t.Error("app on another host matched wrongly")
 	}
 }
 

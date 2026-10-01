@@ -26,10 +26,13 @@ import (
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
 	"github.com/PatterCJ/build-onion/internal/gate"
+	"github.com/PatterCJ/build-onion/internal/gitlabci"
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/policy"
+	repoid "github.com/PatterCJ/build-onion/internal/repo"
+	sigs "github.com/PatterCJ/build-onion/internal/signer"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/tagsig"
 	"github.com/PatterCJ/build-onion/internal/trust"
@@ -163,7 +166,10 @@ type Input struct {
 func Run(in Input) *Report {
 	r := &Report{Artifact: in.Artifact, Digest: in.Digest}
 	defer r.finish()
-	repoURL := "https://github.com/" + in.Claim.Repository
+	repoURL, err := repoid.URL(in.Claim.Repository)
+	if err != nil {
+		r.grade("seal", "claimed repository", Failed, "%v", err)
+	}
 
 	// seal: signatures, identities, and one run behind all of them.
 	var all []*attest.Verified
@@ -192,8 +198,14 @@ func Run(in Input) *Report {
 		"%d bundle(s) name this artifact%s", relevant, unrelatedNote(unrelated))
 	// A bundle that names this artifact but fails cryptographic verification
 	// is evidence of tampering, not missing evidence.
+	against := "signer " + in.Signer.SignerWorkflow
+	for _, v := range verified {
+		if v.Key != "" {
+			against = "the trust file's keys"
+		}
+	}
 	r.check("seal", "no invalid bundles", len(invalid) == 0, Finding,
-		"%d verified against signer %s%s", len(verified), in.Signer.SignerWorkflow, listNote(invalid))
+		"%d verified against %s%s", len(verified), against, listNote(invalid))
 	if len(others) > 0 {
 		r.grade("seal", "other sealing runs", Note,
 			"this digest was also sealed by %d other run(s), not used: %s", len(others), strings.Join(others, ", "))
@@ -230,7 +242,7 @@ func Run(in Input) *Report {
 			break
 		}
 		cert := verified[pt].Certificate
-		r.check("seal", shortType(pt)+" signed for claimed repo", cert.SourceRepositoryURI == repoURL, Finding,
+		r.check("seal", shortType(pt)+" signed for claimed repo", strings.EqualFold(cert.SourceRepositoryURI, repoURL), Finding,
 			"certificate source repo %q, claimed %q", cert.SourceRepositoryURI, repoURL)
 		if in.Claim.Commit != "" {
 			r.check("seal", shortType(pt)+" signed for claimed commit", cert.SourceRepositoryDigest == in.Claim.Commit, Finding,
@@ -270,16 +282,32 @@ func Run(in Input) *Report {
 		}
 	}
 
-	// provenance: SLSA v1 from GitHub, signed by the security line.
+	// provenance: SLSA v1 from GitHub, signed by the security line, or
+	// from a GitLab pipeline, signed by a trusted key.
 	var prov provenance
 	if v := verified[SLSAProvenanceV1]; v != nil && decode(r, "provenance", v.Statement.Predicate, &prov) {
 		bd, rd := prov.BuildDefinition, prov.RunDetails
-		r.check("provenance", "build type", bd.BuildType == GitHubBuildType, Unsupported, "%s", bd.BuildType)
-		builderPrefix := "https://github.com/" + in.Signer.SignerWorkflow + "@"
-		r.check("provenance", "builder is build-onion", strings.HasPrefix(rd.Builder.ID, builderPrefix), Finding, "builder.id %s", rd.Builder.ID)
-		r.check("provenance", "hosted runner", bd.InternalParameters.GitHub.RunnerEnvironment == "github-hosted", Finding,
-			"runner_environment %q (SLSA L3 requires a hosted build platform)", bd.InternalParameters.GitHub.RunnerEnvironment)
-		r.check("provenance", "source repository", bd.ExternalParameters.Workflow.Repository == repoURL, Finding,
+		switch {
+		case bd.BuildType == GitHubBuildType:
+			r.grade("provenance", "build type", Passed, "%s", bd.BuildType)
+			builderPrefix := "https://github.com/" + in.Signer.SignerWorkflow + "@"
+			r.check("provenance", "builder is build-onion", strings.HasPrefix(rd.Builder.ID, builderPrefix), Finding, "builder.id %s", rd.Builder.ID)
+			r.check("provenance", "hosted runner", bd.InternalParameters.GitHub.RunnerEnvironment == "github-hosted", Finding,
+				"runner_environment %q (SLSA L3 requires a hosted build platform)", bd.InternalParameters.GitHub.RunnerEnvironment)
+		case bd.BuildType == sigs.GitLabBuildType && keySigned:
+			gl := bd.InternalParameters.GitLab
+			r.grade("provenance", "build type", Passed, "%s", bd.BuildType)
+			// Only protected refs should be able to reach the signing key.
+			r.check("provenance", "protected ref", gl.RefProtected == "true", Finding,
+				"%s (protected: %s)", bd.ExternalParameters.Workflow.Ref, orNone(gl.RefProtected))
+			r.grade("provenance", "pipeline definition", Note, "%s", bd.ExternalParameters.Workflow.Path)
+			r.grade("provenance", "runner", Note, "%s, as the sealing job reported it", orNone(gl.RunnerDescription))
+		case bd.BuildType == sigs.GitLabBuildType:
+			r.grade("provenance", "build type", Unsupported, "%s: GitLab provenance is accepted only from a trusted key", bd.BuildType)
+		default:
+			r.grade("provenance", "build type", Unsupported, "%s", bd.BuildType)
+		}
+		r.check("provenance", "source repository", strings.EqualFold(bd.ExternalParameters.Workflow.Repository, repoURL), Finding,
 			"workflow repository %s", bd.ExternalParameters.Workflow.Repository)
 		ref := bd.ExternalParameters.Workflow.Ref
 		if len(in.Refs) == 0 {
@@ -303,6 +331,9 @@ func Run(in Input) *Report {
 	if v := verified[inventory.PredicateType]; v != nil && decode(r, "inventory", v.Statement.Predicate, &inv) {
 		haveInv = true
 		r.inv = &inv
+		// A key may seal for many repositories; the record says which one.
+		r.check("inventory", "claimed repository", repoURL != "" && repoid.Same(inv.Source.Repository, repoURL), Finding,
+			"inventory %s, claimed %s", inv.Source.Repository, repoURL)
 		r.check("inventory", "same source commit", inv.Source.Commit == in.Claim.Commit && in.Claim.Commit != "", Finding,
 			"inventory %s, provenance %s", inv.Source.Commit, in.Claim.Commit)
 		r.check("inventory", "same run", prov.RunDetails.Metadata.InvocationID == "" || sameRun(inv.Run.InvocationURL, prov.RunDetails.Metadata.InvocationID), Finding,
@@ -375,6 +406,10 @@ type provenance struct {
 				EventName         string `json:"event_name"`
 				RunnerEnvironment string `json:"runner_environment"`
 			} `json:"github"`
+			GitLab struct {
+				RefProtected      string `json:"ref_protected"`
+				RunnerDescription string `json:"runner_description"`
+			} `json:"gitlab"`
 		} `json:"internalParameters"`
 		ResolvedDependencies []struct {
 			URI    string            `json:"uri"`
@@ -393,7 +428,7 @@ type provenance struct {
 
 func (p *provenance) sourceCommit(repoURL string) string {
 	for _, d := range p.BuildDefinition.ResolvedDependencies {
-		if strings.HasPrefix(d.URI, "git+"+repoURL+"@") {
+		if p := "git+" + repoURL + "@"; len(d.URI) > len(p) && strings.EqualFold(d.URI[:len(p)], p) {
 			return d.Digest["gitCommit"]
 		}
 	}
@@ -701,19 +736,28 @@ func checkPipeline(r *Report, inv *inventory.Inventory) {
 		"build-onion %s@%s", pl.BuildOnion.Repository, pl.BuildOnion.Commit)
 	var loose []string
 	n := 0
+	gitlab := pl.Platform == "gitlab-ci"
 	for _, w := range pl.Workflows {
 		for _, a := range w.Actions {
 			n++
-			if !strings.HasPrefix(a, "./") && !pinnedUse.MatchString(a) && !(strings.HasPrefix(a, "docker://") && manifest.IsPinnedImage(strings.TrimPrefix(a, "docker://"))) {
+			pinned := strings.HasPrefix(a, "./") || pinnedUse.MatchString(a) || (strings.HasPrefix(a, "docker://") && manifest.IsPinnedImage(strings.TrimPrefix(a, "docker://")))
+			if gitlab {
+				pinned = gitlabci.Pinned(a)
+			}
+			if !pinned {
 				loose = append(loose, a)
 			}
 		}
 	}
+	check, what := "every action pinned", "action reference(s) across %d workflow(s)"
+	if gitlab {
+		check, what = "every image and include pinned", "image and include reference(s) across %d pipeline definition(s)"
+	}
 	if len(pl.Workflows) == 0 {
-		r.grade("pipeline", "every action pinned", Failed, "no workflows recorded")
+		r.grade("pipeline", check, Failed, "no workflows recorded")
 	} else {
-		r.check("pipeline", "every action pinned", len(loose) == 0, Finding,
-			"%d action reference(s) across %d workflow(s)%s", n, len(pl.Workflows), listNote(loose))
+		r.check("pipeline", check, len(loose) == 0, Finding,
+			"%d "+what+"%s", n, len(pl.Workflows), listNote(loose))
 	}
 	r.check("pipeline", "jobs inventoried", len(pl.Jobs) > 0, Degraded, "%d job(s) recorded runner and tool versions", len(pl.Jobs))
 }

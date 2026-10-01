@@ -27,7 +27,7 @@ func cmdAttest(args []string) error {
 	fs.Var(&refs, "subject", "subject as name@sha256:<hex> (repeatable)")
 	predicate := fs.String("predicate", "", "predicate JSON file")
 	predicateType := fs.String("predicate-type", "", "predicate type URI")
-	provenance := fs.String("provenance", "", "generate SLSA v1 provenance for this CI instead of --predicate (github)")
+	provenance := fs.String("provenance", "", "generate SLSA v1 provenance for this CI instead of --predicate: github, or gitlab (with --signer-command)")
 	token := fs.String("token", "github", "where the OIDC token comes from: github, or env:NAME")
 	fulcio := fs.String("fulcio", signer.PublicFulcio, "Fulcio URL")
 	rekor := fs.String("rekor", signer.PublicRekor, "Rekor URL")
@@ -41,6 +41,11 @@ func cmdAttest(args []string) error {
 	keyMode := *signerCommand != "" || *publicKeyPath != ""
 	if keyMode && (*signerCommand == "" || *publicKeyPath == "") {
 		return errors.New("--signer-command and --public-key go together")
+	}
+	// peel verifies certificates only from GitHub Actions; on GitLab the
+	// seal is a key's.
+	if *provenance == "gitlab" && !keyMode {
+		return errors.New("--provenance gitlab needs key signing (--signer-command and --public-key)")
 	}
 	if !keyMode && (*fulcio != signer.PublicFulcio || *rekor != signer.PublicRekor) && *trustedRoot == "" {
 		return errors.New("with a private --fulcio or --rekor, pass --trusted-root so the bundle can be checked")
@@ -79,10 +84,10 @@ func cmdAttest(args []string) error {
 	defer cancel()
 	// Fetch the token once: the provenance describes the run it names, and
 	// Fulcio certifies the same token. A key signer needs one only to
-	// describe the run.
+	// describe a GitHub run.
 	var tok string
 	var err error
-	if !keyMode || *provenance != "" {
+	if !keyMode || *provenance == "github" {
 		if tok, err = tokenSource(ctx); err != nil {
 			return err
 		}
@@ -101,8 +106,13 @@ func cmdAttest(args []string) error {
 			return err
 		}
 		*predicateType = "https://slsa.dev/provenance/v1"
+	case *provenance == "gitlab":
+		if pred, err = signer.GitLabProvenance(os.Getenv); err != nil {
+			return err
+		}
+		*predicateType = "https://slsa.dev/provenance/v1"
 	case *provenance != "":
-		return fmt.Errorf("--provenance %q: only github is supported", *provenance)
+		return fmt.Errorf("--provenance %q: want github or gitlab", *provenance)
 	case *predicate != "":
 		if pred, err = os.ReadFile(*predicate); err != nil {
 			return err

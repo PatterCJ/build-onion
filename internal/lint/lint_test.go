@@ -92,3 +92,21 @@ func TestSensitiveCoverage(t *testing.T) {
 		t.Fatalf("stale pattern accepted: %v", err)
 	}
 }
+
+func TestGitLabCI(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ".gitlab-ci.yml")
+	if err := GitLabCI(p); err != nil {
+		t.Errorf("no pipeline file: %v", err)
+	}
+	pinned := "include:\n  - local: ci/x.yml\nbuild:\n  image: docker.io/library/alpine@sha256:" + strings.Repeat("a", 64) + "\n  script: [true]\n"
+	os.WriteFile(p, []byte(pinned), 0o644)
+	if err := GitLabCI(p); err != nil {
+		t.Errorf("pinned pipeline: %v", err)
+	}
+	os.WriteFile(p, []byte(pinned+"scan:\n  image: alpine:3\n  services: [docker:dind]\n"), 0o644)
+	err := GitLabCI(p)
+	if err == nil || !strings.Contains(err.Error(), "docker://alpine:3 is not pinned") || !strings.Contains(err.Error(), "docker://docker:dind is not pinned") {
+		t.Errorf("unpinned images: %v", err)
+	}
+}

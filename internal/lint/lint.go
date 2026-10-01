@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/PatterCJ/build-onion/internal/gitlabci"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
 )
@@ -41,6 +42,7 @@ func Repo(root string, m *manifest.Manifest) error {
 		errs = append(errs, Dockerfile(filepath.Join(root, img.Dockerfile)))
 	}
 	errs = append(errs, Workflows(filepath.Join(root, ".github", "workflows")))
+	errs = append(errs, GitLabCI(filepath.Join(root, ".gitlab-ci.yml")))
 	errs = append(errs, sensitiveCoverage(root, m.Build.Sensitive))
 	return errors.Join(errs...)
 }
@@ -150,6 +152,28 @@ func Workflows(dir string) error {
 			continue
 		}
 		errs = append(errs, workflowFile(filepath.Join(dir, e.Name())))
+	}
+	return errors.Join(errs...)
+}
+
+// GitLabCI requires every image and include in a GitLab pipeline definition
+// to be pinned.
+func GitLabCI(p string) error {
+	raw, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	refs, err := gitlabci.References(raw)
+	if err != nil {
+		return fmt.Errorf("%s: %w", filepath.Base(p), err)
+	}
+	var errs []error
+	for _, r := range refs {
+		if !gitlabci.Pinned(r) {
+			errs = append(errs, fmt.Errorf("%s: %s is not pinned (images by digest; projects and components by commit SHA; remote files by integrity)", filepath.Base(p), r))
+		}
 	}
 	return errors.Join(errs...)
 }

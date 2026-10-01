@@ -21,6 +21,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
+	sigs "github.com/PatterCJ/build-onion/internal/signer"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/trust"
 	"github.com/PatterCJ/build-onion/internal/upstream"
@@ -860,8 +861,43 @@ func TestKeySignedSeal(t *testing.T) {
 	if strings.Contains(lines(r), "signed for claimed repo") || strings.Contains(lines(r), "builder is a trusted release") {
 		t.Errorf("certificate checks ran on a key-signed seal:\n%s", lines(r))
 	}
-	// A claimed commit the signed provenance doesn't name is still caught.
+	if !strings.Contains(lines(r), "verified against the trust file's keys") {
+		t.Errorf("key-signed bundles described as verified against a workflow:\n%s", lines(r))
+	}
+	// A key can seal for several repositories: claiming the artifact for
+	// another one is caught by the inventory, with or without provenance.
 	in := w.input(t)
+	in.Claim.Repository = "someone/else"
+	if r := Run(in); r.Verdict != Finding || !strings.Contains(lines(r), "FINDING inventory/claimed repository") {
+		t.Errorf("another repository's key-signed artifact: %s\n%s", r.Verdict, lines(r))
+	}
+	delete(w.prov, "buildDefinition")
+	in = w.input(t)
+	in.Claim.Repository = "someone/else"
+	if r := Run(in); !strings.Contains(lines(r), "FINDING inventory/claimed repository") {
+		t.Errorf("another repository's key-signed inventory, no usable provenance:\n%s", lines(r))
+	}
+	// A repository on another host, named as the inventory names it.
+	w = newWorld()
+	w.key = "acme-kms-release"
+	w.inv.Source.Repository = "https://gitlab.com/acme/widget"
+	in = w.input(t)
+	in.Claim.Repository = "gitlab.com/acme/widget"
+	if r := Run(in); !strings.Contains(lines(r), "PASSED inventory/claimed repository: inventory https://gitlab.com/acme/widget") {
+		t.Errorf("GitLab repository:\n%s", lines(r))
+	}
+	in.Claim.Repository = "acme/widget" // same path, on GitHub
+	if r := Run(in); r.Verdict != Finding {
+		t.Errorf("same path on another host: %s", r.Verdict)
+	}
+	in.Claim.Repository = "not a repo"
+	if r := Run(in); r.Verdict == Passed || !strings.Contains(lines(r), "seal/claimed repository") {
+		t.Errorf("invalid claimed repository: %s\n%s", r.Verdict, lines(r))
+	}
+	w = newWorld()
+	w.key = "acme-kms-release"
+	// A claimed commit the signed provenance doesn't name is still caught.
+	in = w.input(t)
 	in.Claim.Commit = strings.Repeat("9", 40)
 	if r := Run(in); r.Verdict != Finding {
 		t.Errorf("wrong commit with a key seal: %s", r.Verdict)
@@ -962,5 +998,94 @@ func TestSinglePipelineGrades(t *testing.T) {
 	w.inv.Chain[1].Products[0].Digest = digest.Bytes([]byte("other"))
 	if r := Run(w.input(t)); r.Verdict != Finding || !strings.Contains(lines(r), "FINDING verification/phase records") {
 		t.Errorf("tampered chain: %s\n%s", r.Verdict, lines(r))
+	}
+}
+
+// A GitLab pipeline sealed with a trusted key: its provenance names the
+// project, ref and pipeline, and the inventory must agree.
+func TestGitLabKeySealed(t *testing.T) {
+	const project = "https://gitlab.com/acme/widget"
+	const pipeline = project + "/-/pipelines/9"
+	vars := map[string]string{
+		"CI_SERVER_URL": "https://gitlab.com", "CI_PROJECT_URL": project, "CI_PROJECT_PATH": "acme/widget",
+		"CI_PROJECT_ID": "7", "CI_COMMIT_SHA": commit, "CI_COMMIT_TAG": "v1.0.0", "CI_COMMIT_REF_PROTECTED": "true",
+		"CI_PIPELINE_URL": pipeline, "CI_PIPELINE_SOURCE": "push", "CI_CONFIG_PATH": ".gitlab-ci.yml",
+		"CI_JOB_URL": project + "/-/jobs/1", "CI_RUNNER_ID": "5", "CI_RUNNER_DESCRIPTION": "saas-linux-small-amd64",
+	}
+	mk := func(change map[string]string) *world {
+		env := map[string]string{}
+		for k, v := range vars {
+			env[k] = v
+		}
+		for k, v := range change {
+			env[k] = v
+		}
+		raw, err := sigs.GitLabProvenance(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := newWorld()
+		w.key = "acme-kms-release"
+		w.prov = map[string]any{}
+		json.Unmarshal(raw, &w.prov)
+		w.inv.Source.Repository = project
+		w.inv.Run.InvocationURL = pipeline
+		w.inv.Pipeline.Platform = "gitlab-ci"
+		w.inv.Pipeline.Workflows = []inventory.Workflow{{Role: "caller", Actions: []string{
+			"docker://docker.io/library/docker@sha256:" + strings.Repeat("d", 64), "./ci/common.yml",
+		}}}
+		return w
+	}
+	claim := func(w *world) Input {
+		in := w.input(t)
+		in.Claim.Repository = "gitlab.com/acme/widget"
+		return in
+	}
+
+	r := Run(claim(mk(nil)))
+	for _, want := range []string{
+		"PASSED provenance/build type: " + sigs.GitLabBuildType,
+		"PASSED provenance/protected ref: refs/tags/v1.0.0",
+		"NOTE provenance/pipeline definition: .gitlab-ci.yml",
+		"PASSED provenance/source repository",
+		"PASSED provenance/source commit matches claim",
+		"PASSED inventory/claimed repository",
+		"PASSED inventory/same run",
+	} {
+		if !strings.Contains(lines(r), want) {
+			t.Errorf("missing %q:\n%s", want, lines(r))
+		}
+	}
+	if r.Verdict != Passed {
+		t.Errorf("verdict %s: %v", r.Verdict, graded(r))
+	}
+
+	if !strings.Contains(lines(r), "PASSED pipeline/every image and include pinned: 2 image and include reference(s) across 1 pipeline definition(s)") {
+		t.Errorf("pipeline definition:\n%s", lines(r))
+	}
+	w := mk(nil)
+	w.inv.Pipeline.Workflows[0].Actions = append(w.inv.Pipeline.Workflows[0].Actions, "template:Jobs/SAST.gitlab-ci.yml")
+	if r := Run(claim(w)); !strings.Contains(lines(r), "FINDING pipeline/every image and include pinned") {
+		t.Errorf("unpinned template:\n%s", lines(r))
+	}
+
+	// Sealed from a ref anyone who can push may create.
+	if r := Run(claim(mk(map[string]string{"CI_COMMIT_REF_PROTECTED": "false"}))); r.Verdict != Finding {
+		t.Errorf("unprotected ref: %s", r.Verdict)
+	}
+	// Provenance of another pipeline than the inventory's: the records of
+	// two runs are never combined.
+	if r := Run(claim(mk(map[string]string{"CI_PIPELINE_URL": project + "/-/pipelines/10"}))); r.Verdict != Failed || !strings.Contains(lines(r), "NOTE seal/other sealing runs") {
+		t.Errorf("another pipeline's provenance: %s\n%s", r.Verdict, lines(r))
+	}
+	// Provenance of another project.
+	if r := Run(claim(mk(map[string]string{"CI_PROJECT_URL": "https://gitlab.com/evil/widget"}))); !strings.Contains(lines(r), "FINDING provenance/source repository") {
+		t.Errorf("another project's provenance:\n%s", lines(r))
+	}
+	// GitLab provenance with a certificate: nothing vouches for it.
+	w = mk(nil)
+	w.key = ""
+	if r := Run(claim(w)); !strings.Contains(lines(r), "UNSUPPORTED provenance/build type") || r.Verdict == Passed {
+		t.Errorf("certificate-signed GitLab provenance: %s\n%s", r.Verdict, lines(r))
 	}
 }
