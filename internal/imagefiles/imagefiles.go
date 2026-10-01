@@ -128,7 +128,9 @@ func applyLayer(fs map[string]File, r io.Reader, index int, base bool) error {
 			opaque = append(opaque, dir)
 			continue
 		case strings.HasPrefix(name, whiteoutPrefix):
-			whiteouts = append(whiteouts, path.Join(dir, strings.TrimPrefix(name, whiteoutPrefix)))
+			if target := strings.TrimPrefix(name, whiteoutPrefix); target != "" {
+				whiteouts = append(whiteouts, path.Join(dir, target))
+			}
 			continue
 		}
 		f := File{Path: p, Mode: fmt.Sprintf("%04o", h.Mode&0o7777), Layer: index, Base: base}
@@ -154,33 +156,58 @@ func applyLayer(fs map[string]File, r io.Reader, index int, base bool) error {
 		}
 		added = append(added, f)
 	}
-	for _, d := range opaque {
-		for p := range fs {
-			if d == "" || strings.HasPrefix(p, d+"/") {
-				delete(fs, p)
-			}
+	// One pass over what lower layers wrote: a path goes if it, or a
+	// directory above it, is whited out, or a directory above it is opaque.
+	if len(whiteouts) > 0 || len(opaque) > 0 {
+		gone, opq := map[string]bool{}, map[string]bool{}
+		for _, w := range whiteouts {
+			gone[w] = true
 		}
-	}
-	for _, w := range whiteouts {
+		for _, d := range opaque {
+			opq[d] = true
+		}
 		for p := range fs {
-			if p == w || strings.HasPrefix(p, w+"/") {
+			if hidden(p, gone, opq) {
 				delete(fs, p)
 			}
 		}
 	}
 	for _, f := range added {
-		// A hardlink takes its target's content as it is now.
-		if f.Type == "hardlink" {
-			if t, ok := fs[f.Link]; ok && t.Type == "file" {
-				f.Size, f.SHA256 = t.Size, t.SHA256
-			}
-		}
 		fs[f.Path] = f
+	}
+	// A hardlink has its target's content, whichever order the tar listed
+	// them in.
+	for _, f := range added {
+		if f.Type != "hardlink" {
+			continue
+		}
+		if t, ok := fs[f.Link]; ok && t.Type == "file" {
+			f.Size, f.SHA256 = t.Size, t.SHA256
+			fs[f.Path] = f
+		}
 	}
 	if len(fs) > maxEntries {
 		return fmt.Errorf("more than %d paths", maxEntries)
 	}
 	return nil
+}
+
+// hidden reports whether p is removed by a whiteout of itself or an
+// ancestor, or by an opaque marker in an ancestor directory.
+func hidden(p string, gone, opaque map[string]bool) bool {
+	if gone[p] {
+		return true
+	}
+	for d := p; ; {
+		i := strings.LastIndexByte(d, '/')
+		if i < 0 {
+			return opaque[""]
+		}
+		d = d[:i]
+		if gone[d] || opaque[d] {
+			return true
+		}
+	}
 }
 
 // clean normalizes a tar entry name to a path relative to the image root.

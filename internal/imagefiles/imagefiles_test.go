@@ -180,3 +180,41 @@ func TestFromOCIArchive(t *testing.T) {
 		}
 	}
 }
+
+// A hardlink listed before its target still gets the target's content; an
+// empty whiteout name removes nothing; a root opaque marker hides every
+// lower path.
+func TestEdgeCases(t *testing.T) {
+	l1 := layer(t, entry{name: "keep/a", body: "a"}, entry{name: "deep/x/y/z", body: "z"})
+	l2 := layer(t,
+		entry{name: "bin/link", typ: tar.TypeLink, link: "bin/real"},
+		entry{name: "bin/real", body: "real"},
+		entry{name: "keep/.wh."},
+		entry{name: "deep/.wh.x"},
+	)
+	img, _ := mutate.AppendLayers(empty.Image, l1, l2)
+	got, err := List(img, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]File{}
+	for _, f := range got.Files {
+		files[f.Path] = f
+	}
+	if files["bin/link"].SHA256 != sum("real") {
+		t.Errorf("hardlink before its target: %+v", files["bin/link"])
+	}
+	if _, ok := files["keep/a"]; !ok {
+		t.Error("an empty whiteout name removed a file")
+	}
+	if _, ok := files["deep/x/y/z"]; ok {
+		t.Error("whiteout of a directory left a file deep under it")
+	}
+
+	root := layer(t, entry{name: ".wh..wh..opq"}, entry{name: "new", body: "n"})
+	img2, _ := mutate.AppendLayers(empty.Image, l1, root)
+	got2, _ := List(img2, nil)
+	if len(got2.Files) != 1 || got2.Files[0].Path != "new" {
+		t.Errorf("root opaque: %+v", got2.Files)
+	}
+}
