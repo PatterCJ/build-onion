@@ -275,7 +275,7 @@ CGO_ENABLED=0 go build -trimpath -o onion ./cmd/onion
 
 Or run it from the published image: `docker run --rm ghcr.io/pattercj/build-onion:<tag> peel …`. On GitHub Actions, every block, finding and coverage gap is also raised as an annotation on the run's summary page. `GITHUB_TOKEN`, when set, authenticates GitHub API requests; the unauthenticated limit is 60 an hour.
 
-Commands you run yourself: [`peel`](#onion-peel), [`trust add`](#onion-trust-add), [`attest`](#onion-attest), [`push-bundles`](#onion-push-bundles), [`validate`](#onion-validate), [`upstream`](#onion-upstream), [`record scan`](#onion-record), [`digest`](#onion-digest). The rest are the steps the reusable workflows run, and can drive the same pipeline from another CI system.
+Commands you run yourself: [`peel`](#onion-peel), [`trust add`](#onion-trust-add), [`attest`](#onion-attest), [`push-bundles`](#onion-push-bundles), [`image-files`](#onion-image-files), [`validate`](#onion-validate), [`upstream`](#onion-upstream), [`record scan`](#onion-record), [`digest`](#onion-digest). The rest are the steps the reusable workflows run, and can drive the same pipeline from another CI system.
 
 ### Flags most commands share
 
@@ -428,6 +428,17 @@ onion push-bundles --image ghcr.io/acme/widget@sha256:… --bundles DIR
 ```
 
 Only bundles whose statement names the image's digest are pushed. Credentials come from the Docker config, as for `docker push`.
+
+### `onion image-files`
+
+List every path in an image's final filesystem, with its type, mode, size, sha256 and the layer that last wrote it, after applying the layers' deletions (whiteouts). With `--base`, the image must start with that base's layers, and they are marked as base, so every path is either from the pinned base or added by the build.
+
+```sh
+onion image-files --oci image.tar --base gcr.io/distroless/static-debian12:nonroot@sha256:… --out files.json
+onion image-files --image ghcr.io/acme/widget@sha256:…
+```
+
+It grades nothing; it's a fact to cross-reference with the SBOM, the source and the declared outputs.
 
 ### `onion digest`
 
