@@ -104,6 +104,7 @@ func timeSleep() { time.Sleep(10 * time.Millisecond) }
 
 // harness runs a proxy whose resolver maps test names to local listeners.
 type harness struct {
+	p     *Proxy
 	proxy *httptest.Server
 	log   *safeBuffer
 	names map[string]netip.Addr
@@ -135,6 +136,7 @@ func newHarness(t *testing.T, rules []manifest.EgressRule, names map[string]stri
 			return CheckAddr(a, r)
 		}
 	}
+	h.p = p
 	h.proxy = httptest.NewServer(p)
 	t.Cleanup(h.proxy.Close)
 	return h
@@ -356,5 +358,92 @@ func TestIPLiteralDeniedEvenIfListed(t *testing.T) {
 	status, _, _ := h.connect(t, fmt.Sprintf("127.0.0.1:%d", port))
 	if !strings.HasPrefix(status, "403") {
 		t.Fatalf("status %s", status)
+	}
+}
+
+// Report mode lets a host outside the allow-list through, marked unlisted,
+// and keeps every other protection: the address checks and the refusal of
+// IP-address targets.
+func TestReportMode(t *testing.T) {
+	port := echoServer(t)
+	names := map[string]string{"mirror.example.com": "127.0.0.1", "other.example.net": "127.0.0.1", "metadata.example.com": "169.254.169.254"}
+	h := newHarness(t, []manifest.EgressRule{{Host: "mirror.example.com", Port: port}}, names, true)
+	h.p.Report = true
+
+	status, c, _ := h.connect(t, fmt.Sprintf("other.example.net:%d", port))
+	if !strings.HasPrefix(status, "200") {
+		t.Fatalf("unlisted host: status %s", status)
+	}
+	c.Close()
+	s := waitForEntries(t, h, 1)
+	if s.Denied != 0 || s.Unlisted != 1 || !s.Connections[0].Allowed || !s.Connections[0].Unlisted {
+		t.Fatalf("summary = %+v", s)
+	}
+	if p := s.Proposed(); len(p) != 1 || p[0].Host != "other.example.net" || p[0].Port != port {
+		t.Errorf("proposed = %+v", p)
+	}
+
+	// Refused in every mode: metadata and link-local addresses, by name or
+	// as an IP address.
+	for name, target := range map[string]string{
+		"metadata by name":    fmt.Sprintf("metadata.example.com:%d", port),
+		"metadata IP literal": "169.254.169.254:80",
+	} {
+		h := newHarness(t, nil, names, true)
+		h.p.Report = true
+		if status, _, _ := h.connect(t, target); !strings.HasPrefix(status, "403") {
+			t.Errorf("%s in report mode: status %s", name, status)
+		}
+	}
+
+	// An IP-address target, which enforce mode refuses, is recorded.
+	h2 := newHarness(t, nil, names, true)
+	h2.p.Report = true
+	status, c2, _ := h2.connect(t, fmt.Sprintf("127.0.0.1:%d", echoServer(t)))
+	if !strings.HasPrefix(status, "200") {
+		t.Fatalf("IP literal in report mode: status %s", status)
+	}
+	c2.Close()
+	if s := waitForEntries(t, h2, 1); !s.Connections[0].Unlisted || len(s.Proposed()) != 0 {
+		t.Errorf("IP literal: %+v, proposed %+v", s, s.Proposed())
+	}
+}
+
+// An unlisted host on a private address (an internal artifact store) is
+// reached in report mode, and the proposed rule says private: true.
+func TestReportModePrivateHost(t *testing.T) {
+	log := &safeBuffer{}
+	p := &Proxy{Log: log, Report: true}
+	e := Entry{Host: "artifacts.acme.internal", Port: 443, Addr: "10.0.0.8:443", Allowed: true, Unlisted: true}
+	p.log(e)
+	s, err := Summarize(bytes.NewReader(log.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr := s.Proposed(); len(pr) != 1 || !pr[0].Private || pr[0].Host != "artifacts.acme.internal" {
+		t.Errorf("proposed = %+v", pr)
+	}
+	if err := CheckAddr(netip.MustParseAddr("10.0.0.8"), manifest.EgressRule{Host: "x", Private: true}); err != nil {
+		t.Errorf("private rule refused a private address: %v", err)
+	}
+}
+
+func TestRecordModeCheck(t *testing.T) {
+	m := &manifest.Manifest{Dependencies: manifest.Dependencies{Fetch: "go mod download", Egress: []manifest.EgressRule{{Host: "proxy.golang.org"}}}}
+	sum := &Summary{Connections: []Connection{{Host: "evil.example.net", Port: 443, Allowed: true, Unlisted: true, Count: 1}}, Unlisted: 1}
+	rec := &Record{Mode: ModeRecord, Rules: m.Dependencies.Egress, Summary: sum}
+	if err := rec.Check(m); err != nil {
+		t.Errorf("a report-mode record with unlisted traffic is consistent: %v", err)
+	}
+	rec.Rules = nil
+	if err := rec.Check(m); err == nil {
+		t.Error("record with other rules accepted")
+	}
+	noRules := &manifest.Manifest{Dependencies: manifest.Dependencies{Fetch: "x"}}
+	if err := (&Record{Mode: ModeRecord, Summary: sum}).Check(noRules); err != nil {
+		t.Errorf("report mode without an allow-list: %v", err)
+	}
+	if err := (&Record{Mode: ModeRecord}).Check(noRules); err == nil {
+		t.Error("record without a log accepted")
 	}
 }

@@ -112,6 +112,7 @@ repository:
 | Field | Default | Meaning |
 |---|---|---|
 | `apiVersion` | | `build-onion/policy/v1`. |
+| `mode` | `enforce` | `report` records what the gate and the fetch step would block instead of blocking, and `peel` grades it as a finding. See [Policy](policy.md#report-mode-adopt-first-enforce-later). |
 | `release.refs` | `refs/heads/main`, `refs/tags/v*` | Refs (globs) whose builds may be sealed. Everything else builds and is checked, but isn't signed or published. |
 | `release.events` | `push`, `workflow_dispatch`, `release` | Events whose builds may be sealed. `pull_request_target` and `workflow_run` are always refused. |
 | `release.tagSigners` | | SSH public keys (authorized_keys form). When set, a tag release builds only if its tag is signed by one of them and points at the commit being built. |
@@ -432,9 +433,9 @@ These are the commands the reusable workflows run, in order.
 | `onion source snapshot` | Hash every tracked file of a clean checkout. | `--source`, `--out` (required) |
 | `onion source verify` | Fail if the checkout differs from a snapshot. | `--snapshot` (required), `--expect DIGEST`, `--source`, `--manifest` |
 | `onion gate` | Decide whether this build may be sealed; exit non-zero if the policy blocks it. | `--snapshot`, `--event`, `--ref` (all required); `--policy`, `--base SHA`, `--fork`, `--repository`, `--platform`, `--actor`, `--run-url`, `--branch-rules FILE`, `--default-branch`, `--out`, `--github-output` |
-| `onion fetch` | Run `dependencies.fetch` in the builder, behind the egress proxy when an allow-list is declared. | `--cache DIR` (required), `--snapshot`, `--egress-out FILE` |
+| `onion fetch` | Run `dependencies.fetch` in the builder, behind the egress proxy when an allow-list is declared or the policy is in report mode (which records instead of denying, and prints an allow-list covering what fetch reached). | `--cache DIR` (required), `--snapshot`, `--egress-out FILE`, `--policy` |
 | `onion build` | Run `build.run` in the builder with no network, on the staged inputs, and collect the outputs. | `--cache DIR`, `--out DIR`, `--snapshot`, `--stage-dir DIR` |
 | `onion compare` | Compare the security line's rebuild with the build line's outputs; exit non-zero if they differ. | `--staged DIR`, `--rebuilt DIR`, `--runner`, `--out` |
 | `onion inventory` | Hash everything and write the inventory predicate to stdout. | `--snapshot`, `--records DIR`, `--repository`, `--commit`, `--tree`, `--files DIR` (all required); `--expect-snapshot`, `--image-archive`, `--scan-records DIR`, `--gate`, `--rebuild`, `--egress`, `--upstream`, `--platform`, `--invocation` |
-| `onion proxy` | The egress proxy, run inside its own container by `fetch`. | `--rules JSON`, `--log FILE` (required), `--listen` (default `127.0.0.1:3128`) |
+| `onion proxy` | The egress proxy, run inside its own container by `fetch`. | `--rules JSON`, `--log FILE` (required), `--listen` (default `127.0.0.1:3128`), `--report` |
 | `onion version` | Print the version. | |

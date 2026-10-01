@@ -31,15 +31,18 @@ import (
 
 // Entry is one logged connection attempt.
 type Entry struct {
-	Time     time.Time `json:"time"`
-	Method   string    `json:"method"` // CONNECT, GET, …
-	Host     string    `json:"host"`
-	Port     int       `json:"port"`
-	Addr     string    `json:"addr,omitempty"` // the address actually dialled
-	Allowed  bool      `json:"allowed"`
-	Reason   string    `json:"reason,omitempty"`
-	BytesOut int64     `json:"bytesOut"` // client → upstream
-	BytesIn  int64     `json:"bytesIn"`  // upstream → client
+	Time    time.Time `json:"time"`
+	Method  string    `json:"method"` // CONNECT, GET, …
+	Host    string    `json:"host"`
+	Port    int       `json:"port"`
+	Addr    string    `json:"addr,omitempty"` // the address actually dialled
+	Allowed bool      `json:"allowed"`
+	// Unlisted marks a connection outside the allow-list that report mode
+	// let through: enforce mode would have denied it.
+	Unlisted bool   `json:"unlisted,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	BytesOut int64  `json:"bytesOut"` // client → upstream
+	BytesIn  int64  `json:"bytesIn"`  // upstream → client
 }
 
 // Proxy is an HTTP forward proxy restricted to an allow-list.
@@ -54,6 +57,12 @@ type Proxy struct {
 	CheckAddr func(addr netip.Addr, rule manifest.EgressRule) error
 	// DialTimeout bounds DNS plus TCP connect.
 	DialTimeout time.Duration
+	// Report lets targets outside Rules through, marking them Unlisted:
+	// hosts that resolve to private addresses and IP-address targets
+	// included, so report mode never breaks a fetch that unrestricted
+	// network would allow. Loopback, link-local and metadata addresses are
+	// refused in every mode.
+	Report bool
 
 	mu sync.Mutex
 }
@@ -119,6 +128,16 @@ func CheckAddr(addr netip.Addr, rule manifest.EgressRule) error {
 	return nil
 }
 
+func isPrivate(a netip.Addr) bool {
+	a = a.Unmap()
+	for _, p := range private {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Proxy) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
 	if p.Resolve != nil {
 		return p.Resolve(ctx, host)
@@ -151,13 +170,22 @@ func (d *Denied) Error() string { return d.Reason }
 
 // dial resolves host itself and connects only to an address that passes the
 // checks, so the address checked is the address used.
-func (p *Proxy) dial(ctx context.Context, host string, port int) (net.Conn, string, error) {
-	if _, err := netip.ParseAddr(host); err == nil {
-		return nil, "", &Denied{"IP addresses are not allowed; egress rules name hosts"}
+func (p *Proxy) dial(ctx context.Context, host string, port int) (conn net.Conn, addr string, unlisted bool, err error) {
+	literal, isLiteral := netip.ParseAddr(host)
+	if isLiteral == nil && !p.Report {
+		return nil, "", false, &Denied{"IP addresses are not allowed; egress rules name hosts"}
 	}
 	rule, ok := Match(p.Rules, host, port)
+	if isLiteral == nil {
+		ok = false
+	}
 	if !ok {
-		return nil, "", &Denied{fmt.Sprintf("%s:%d is not in the manifest's dependencies.egress", host, port)}
+		if !p.Report {
+			return nil, "", false, &Denied{fmt.Sprintf("%s:%d is not in the manifest's dependencies.egress", host, port)}
+		}
+		// Report mode: reach it as unrestricted network would, except the
+		// addresses that are refused in every mode.
+		rule, unlisted = manifest.EgressRule{Host: host, Port: port, Private: true}, true
 	}
 	timeout := p.DialTimeout
 	if timeout == 0 {
@@ -165,9 +193,11 @@ func (p *Proxy) dial(ctx context.Context, host string, port int) (net.Conn, stri
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	addrs, err := p.resolve(ctx, host)
-	if err != nil {
-		return nil, "", fmt.Errorf("resolve %s: %w", host, err)
+	var addrs []netip.Addr
+	if isLiteral == nil {
+		addrs = []netip.Addr{literal}
+	} else if addrs, err = p.resolve(ctx, host); err != nil {
+		return nil, "", unlisted, fmt.Errorf("resolve %s: %w", host, err)
 	}
 	var blocked, failed []string
 	var d net.Dialer
@@ -177,21 +207,21 @@ func (p *Proxy) dial(ctx context.Context, host string, port int) (net.Conn, stri
 			continue
 		}
 		target := netip.AddrPortFrom(a.Unmap(), uint16(port)).String()
-		conn, err := d.DialContext(ctx, "tcp", target)
+		c, err := d.DialContext(ctx, "tcp", target)
 		if err != nil {
 			failed = append(failed, err.Error())
 			continue
 		}
-		return conn, target, nil
+		return c, target, unlisted, nil
 	}
 	switch {
 	case len(failed) > 0:
 		// At least one address was permitted; reaching it failed.
-		return nil, "", errors.New(strings.Join(append(failed, blocked...), "; "))
+		return nil, "", unlisted, errors.New(strings.Join(append(failed, blocked...), "; "))
 	case len(blocked) > 0:
-		return nil, "", &Denied{strings.Join(blocked, "; ")}
+		return nil, "", unlisted, &Denied{strings.Join(blocked, "; ")}
 	default:
-		return nil, "", fmt.Errorf("%s resolved to no addresses", host)
+		return nil, "", unlisted, fmt.Errorf("%s resolved to no addresses", host)
 	}
 }
 
@@ -253,7 +283,8 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.Host, e.Port = host, port
-	upstream, addr, err := p.dial(r.Context(), host, port)
+	upstream, addr, unlisted, err := p.dial(r.Context(), host, port)
+	e.Unlisted = unlisted
 	if err != nil {
 		p.fail(w, e, err)
 		return
@@ -319,8 +350,8 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	transport := &http.Transport{
 		Proxy: nil, // never chain to another proxy
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			c, addr, err := p.dial(ctx, host, port)
-			dialled = addr
+			c, addr, unlisted, err := p.dial(ctx, host, port)
+			dialled, e.Unlisted = addr, unlisted
 			return c, err
 		},
 		DisableKeepAlives:     true,
@@ -380,12 +411,19 @@ func (c *countingReader) Close() error {
 type Summary struct {
 	Connections []Connection `json:"connections"`
 	Denied      int          `json:"denied"`
+	// Unlisted counts connections report mode let through that enforce
+	// mode would have denied.
+	Unlisted int `json:"unlisted,omitempty"`
 }
 
 type Connection struct {
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
 	Allowed  bool   `json:"allowed"`
+	Unlisted bool   `json:"unlisted,omitempty"`
+	// Private: fetch reached it at a private address, so an allow-list rule
+	// for it needs private: true.
+	Private  bool   `json:"private,omitempty"`
 	Count    int    `json:"count"`
 	BytesOut int64  `json:"bytesOut"`
 	BytesIn  int64  `json:"bytesIn"`
@@ -412,14 +450,20 @@ func Summarize(r io.Reader) (*Summary, error) {
 		if !ok {
 			i = len(s.Connections)
 			idx[key] = i
-			s.Connections = append(s.Connections, Connection{Host: e.Host, Port: e.Port, Allowed: e.Allowed, Reason: e.Reason})
+			s.Connections = append(s.Connections, Connection{Host: e.Host, Port: e.Port, Allowed: e.Allowed, Unlisted: e.Unlisted, Reason: e.Reason})
 		}
 		c := &s.Connections[i]
+		if ap, err := netip.ParseAddrPort(e.Addr); err == nil && isPrivate(ap.Addr()) {
+			c.Private = true
+		}
 		c.Count++
 		c.BytesOut += e.BytesOut
 		c.BytesIn += e.BytesIn
 		if !e.Allowed {
 			s.Denied++
+		}
+		if e.Allowed && e.Unlisted {
+			s.Unlisted++
 		}
 	}
 	return s, sc.Err()
@@ -449,6 +493,9 @@ const (
 	ModeNone         = "none"         // the manifest has no fetch step
 	ModeUnrestricted = "unrestricted" // fetch ran with full network
 	ModeAllowList    = "allow-list"   // fetch ran behind the egress proxy
+	// ModeRecord: report mode. Fetch ran behind the proxy, which recorded
+	// connections outside the allow-list instead of denying them.
+	ModeRecord = "record"
 )
 
 // Record is what the inventory keeps about the fetch step's network.
@@ -460,8 +507,21 @@ type Record struct {
 }
 
 // Check verifies that a record is consistent with the manifest it claims to
-// describe and shows no undeclared traffic.
+// describe and shows no undeclared traffic. A report-mode record may show
+// traffic outside the allow-list: that is what it is for, and peel grades it.
 func (r *Record) Check(m *manifest.Manifest) error {
+	if r.Mode == ModeRecord {
+		if m.Dependencies.Fetch == "" {
+			return errors.New("manifest has no fetch step, but egress record says \"record\"")
+		}
+		if len(m.Dependencies.Egress) != len(r.Rules) || (len(r.Rules) > 0 && !sameRules(m.Dependencies.Egress, r.Rules)) {
+			return errors.New("egress record's rules differ from the manifest's dependencies.egress")
+		}
+		if r.Summary == nil {
+			return errors.New("egress record has no connection log summary")
+		}
+		return nil
+	}
 	switch {
 	case m.Dependencies.Fetch == "":
 		if r.Mode != ModeNone {
@@ -486,6 +546,38 @@ func (r *Record) Check(m *manifest.Manifest) error {
 		return errors.New("egress record has no connection log summary")
 	}
 	return r.Summary.CheckAgainst(r.Rules)
+}
+
+func sameRules(a, b []manifest.EgressRule) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return bytes.Equal(x, y)
+}
+
+// Proposed is an allow-list covering every connection fetch made, for a
+// manifest's dependencies.egress.
+func (s *Summary) Proposed() []manifest.EgressRule {
+	seen := map[string]bool{}
+	var out []manifest.EgressRule
+	for _, c := range s.Connections {
+		if !c.Allowed {
+			continue
+		}
+		if _, err := netip.ParseAddr(c.Host); err == nil {
+			continue // an IP address can't be allow-listed; peel reports it
+		}
+		k := fmt.Sprintf("%s:%d", c.Host, c.Port)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		r := manifest.EgressRule{Host: c.Host, Private: c.Private}
+		if c.Port != 443 {
+			r.Port = c.Port
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // CheckAgainst requires no denials and every allowed connection to match a rule.

@@ -416,3 +416,30 @@ func TestSignedReleaseTags(t *testing.T) {
 		t.Errorf("branch push blocked by tag signing: %v", v.BlockedBy)
 	}
 }
+
+// In report mode what would block is recorded, not enforced; forbidden
+// events are refused in every mode.
+func TestReportMode(t *testing.T) {
+	f := setup(t)
+	pol := strictRepo()
+	pol.Mode = policy.ModeReport
+	pol.RequireBuildInputs = true // f.m declares no build.inputs
+	v := f.evalRepo(t, "refs/heads/main", "", pol)
+	if v.Blocked || len(v.BlockedBy) != 0 || v.Mode != policy.ModeReport {
+		t.Fatalf("report mode blocked: %+v", v)
+	}
+	joined := strings.Join(v.WouldBlock, ";")
+	for _, want := range []string{"policy requires build.inputs", "branch rules for \"main\" were not provided"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("would-block missing %q: %v", want, v.WouldBlock)
+		}
+	}
+	if !v.Releasable {
+		t.Error("report mode changed whether the build is releasable")
+	}
+
+	p := Params{SourceDir: f.dir, ManifestPath: "build-onion.yml", Context: Context{Event: "pull_request_target", Ref: "refs/heads/main"}}
+	if v, _ := Evaluate(p, pol, f.m); !v.Blocked || len(v.WouldBlock) != 0 {
+		t.Errorf("forbidden event not refused in report mode: %+v", v)
+	}
+}

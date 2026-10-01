@@ -31,6 +31,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/peel"
+	"github.com/PatterCJ/build-onion/internal/policy"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/trust"
 	"github.com/PatterCJ/build-onion/internal/upstream"
@@ -169,6 +170,7 @@ func cmdFetch(args []string) error {
 	cache := fs.String("cache", "", "dependency cache directory to populate")
 	snap := fs.String("snapshot", "", "verify the source against this snapshot before and after")
 	egressOut := fs.String("egress-out", "", "write the fetch network record (mode, rules, connections) here")
+	policyPath := fs.String("policy", "", "policy file (default: "+policy.DefaultPath+" in --source if present); mode report records egress instead of blocking it")
 	fs.Parse(args)
 	if *cache == "" {
 		return errors.New("--cache is required")
@@ -177,10 +179,14 @@ func cmdFetch(args []string) error {
 	if err != nil {
 		return err
 	}
+	pol, _, _, err := loadPolicy(s.source, *policyPath)
+	if err != nil {
+		return err
+	}
 	var rec *egress.Record
 	_, cleanup, err := guarded(s, *snap, "", m, func(dir string) error {
 		var ferr error
-		rec, ferr = builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr}.Fetch(dir, *cache, m)
+		rec, ferr = builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr, Report: pol.Report()}.Fetch(dir, *cache, m)
 		return ferr
 	})
 	cleanup()
@@ -197,15 +203,40 @@ func cmdFetch(args []string) error {
 	return err
 }
 
+// printProposed shows, in report mode, the allow-list that covers what fetch
+// reached, ready for the manifest.
+func printProposed(rec *egress.Record) {
+	proposed := rec.Summary.Proposed()
+	var b strings.Builder
+	b.WriteString("dependencies:\n  egress:\n")
+	for _, r := range proposed {
+		fmt.Fprintf(&b, "    - host: %s\n", r.Host)
+		if r.Port != 0 {
+			fmt.Fprintf(&b, "      port: %d\n", r.Port)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "egress: report mode; %d connection(s) outside the allow-list. An allow-list covering everything fetch reached:\n%s",
+		rec.Summary.Unlisted, b.String())
+	if rec.Summary.Unlisted > 0 {
+		annotate("warning", "onion fetch: egress outside the allow-list (report mode)", "Enforce mode would deny these. Allow-list covering everything fetch reached:\n"+b.String())
+	}
+}
+
 func printEgress(rec *egress.Record) {
 	fmt.Fprintf(os.Stderr, "egress: %s\n", rec.Mode)
 	if rec.Summary == nil {
 		return
 	}
+	if rec.Mode == egress.ModeRecord {
+		defer printProposed(rec)
+	}
 	for _, c := range rec.Summary.Connections {
 		verdict := "allowed"
-		if !c.Allowed {
+		switch {
+		case !c.Allowed:
 			verdict = "DENIED"
+		case c.Unlisted:
+			verdict = "UNLISTED"
 		}
 		fmt.Fprintf(os.Stderr, "egress: %-7s %s:%d ×%d  out %d B  in %d B  %s\n", verdict, c.Host, c.Port, c.Count, c.BytesOut, c.BytesIn, c.Reason)
 	}

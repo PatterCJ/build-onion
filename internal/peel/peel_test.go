@@ -765,3 +765,37 @@ func TestChoosesSealingRun(t *testing.T) {
 		t.Errorf("newest run not chosen, or runs mixed:\n%s", lines(r))
 	}
 }
+
+func TestReportModeGrades(t *testing.T) {
+	w := newWorld()
+	w.inv.Gate.Mode = "report"
+	w.inv.Gate.WouldBlock = []string{"repository: main allows force pushes"}
+	if r := Run(w.input(t)); r.Verdict != Finding || !strings.Contains(lines(r), "FINDING gate/would have been blocked: 1 reason(s) in report mode: repository: main allows force pushes") {
+		t.Errorf("would-block:\n%s", lines(r))
+	}
+
+	rules := []manifest.EgressRule{{Host: "proxy.golang.org"}}
+	conn := func(host string, unlisted bool) egress.Connection {
+		return egress.Connection{Host: host, Port: 443, Allowed: true, Unlisted: unlisted, Count: 1}
+	}
+	cases := []struct {
+		rules   []manifest.EgressRule
+		conns   []egress.Connection
+		want    string
+		verdict Status
+	}{
+		{rules, []egress.Connection{conn("proxy.golang.org", false)}, "PASSED egress/fetch connections: report mode: every connection was within the allow-list", Passed},
+		{rules, []egress.Connection{conn("proxy.golang.org", false), conn("evil.example.net", true)}, "FINDING egress/fetch connections: report mode: 1 connection(s) enforce mode would have denied: evil.example.net:443", Finding},
+		{nil, []egress.Connection{conn("proxy.golang.org", true)}, "DEGRADED egress/fetch network: report mode with no allow-list", Degraded},
+	}
+	for _, c := range cases {
+		w := newWorld()
+		w.inv.Gate.Mode = "report"
+		w.inv.Egress = &egress.Record{Mode: egress.ModeRecord, Rules: c.rules, ProxyImage: w.inv.Egress.ProxyImage,
+			Summary: &egress.Summary{Connections: c.conns}}
+		r := Run(w.input(t))
+		if r.Verdict != c.verdict || !strings.Contains(lines(r), c.want) || !strings.Contains(lines(r), "NOTE egress/allow-list for what fetch reached") {
+			t.Errorf("want %q (%s), got %s:\n%s", c.want, c.verdict, r.Verdict, lines(r))
+		}
+	}
+}

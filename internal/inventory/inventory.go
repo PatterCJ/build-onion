@@ -16,6 +16,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/lint"
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
+	"github.com/PatterCJ/build-onion/internal/policy"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/upstream"
 	"github.com/PatterCJ/build-onion/internal/verify"
@@ -171,6 +172,9 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 	}
 	if err := egressRec.Check(m); err != nil {
 		return nil, nil, fmt.Errorf("egress: %w", err)
+	}
+	if egressRec.Mode == egress.ModeRecord && (p.Gate == nil || p.Gate.Mode != policy.ModeReport) {
+		return nil, nil, errors.New("egress was only recorded, not enforced, but the gate didn't run in report mode")
 	}
 	if v := p.Verification; v != nil {
 		if v.Rebuild == nil || !v.Rebuild.Matched {

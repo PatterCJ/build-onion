@@ -10,6 +10,7 @@ import (
 
 	"github.com/PatterCJ/build-onion/internal/digest"
 	"github.com/PatterCJ/build-onion/internal/egress"
+	"github.com/PatterCJ/build-onion/internal/gate"
 	"github.com/PatterCJ/build-onion/internal/manifest"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/upstream"
@@ -407,5 +408,22 @@ func TestGenerateUpstream(t *testing.T) {
 	stray[0].Attestations = []upstream.Attestation{{Subject: "sha256:" + strings.Repeat("0", 64)}}
 	if err := gen(&upstream.Record{Lockfiles: lock, Results: stray}); err == nil || !strings.Contains(err.Error(), "doesn't pin") {
 		t.Errorf("attestation about unlocked bytes accepted: %v", err)
+	}
+}
+
+// A fetch that only recorded its egress belongs to a report-mode gate.
+func TestRecordedEgressNeedsReportMode(t *testing.T) {
+	src, snap := gitSource(t)
+	files := t.TempDir()
+	os.WriteFile(filepath.Join(files, "widget"), []byte("binary"), 0o755)
+	p := params(src, snap, files)
+	p.Egress = &egress.Record{Mode: egress.ModeRecord, Summary: &egress.Summary{}}
+	p.Gate = &gate.Verdict{Releasable: true}
+	if _, _, err := Generate(p); err == nil || !strings.Contains(err.Error(), "report mode") {
+		t.Errorf("recorded egress with an enforcing gate: %v", err)
+	}
+	p.Gate.Mode = "report"
+	if _, _, err := Generate(p); err != nil {
+		t.Errorf("recorded egress with a report-mode gate: %v", err)
 	}
 }
