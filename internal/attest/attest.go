@@ -321,9 +321,12 @@ func splitDigest(d string) (string, []byte, error) {
 // FromRegistry returns the bundles stored in the registry as referrers of
 // the image at ref.
 func FromRegistry(ref name.Digest, opts ...remote.Option) ([]Candidate, error) {
-	raws, err := ocibundle.Fetch(ref, opts...)
+	raws, skipped, err := ocibundle.Fetch(ref, opts...)
 	if err != nil {
 		return nil, err
+	}
+	for _, s := range skipped {
+		fmt.Fprintf(os.Stderr, "onion: registry %s: skipped %s\n", ref.Context(), s)
 	}
 	var out []Candidate
 	for i, raw := range raws {

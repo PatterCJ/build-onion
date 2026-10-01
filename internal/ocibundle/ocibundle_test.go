@@ -51,8 +51,8 @@ func TestPushAndFetch(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		got, err := Fetch(subject)
-		if err != nil {
+		got, skipped, err := Fetch(subject)
+		if err != nil || len(skipped) != 0 {
 			t.Fatalf("referrers=%v: fetch: %v", referrers, err)
 		}
 		var gs []string
@@ -79,7 +79,7 @@ func TestFetchIsPerSubject(t *testing.T) {
 	if err := remote.Write(otherRef, img); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Fetch(otherRef)
+	got, _, err := Fetch(otherRef)
 	if err != nil || len(got) != 0 {
 		t.Errorf("other image got %d bundle(s), err %v", len(got), err)
 	}
@@ -110,4 +110,32 @@ func pushOtherReferrer(subject name.Digest) error {
 	})
 	sum := sha256.Sum256(raw)
 	return remote.Put(subject.Context().Digest("sha256:"+hex.EncodeToString(sum[:])), rawManifest(raw))
+}
+
+// A referrer whose bundle can't be read is skipped and reported; the other
+// bundles are still returned.
+func TestFetchSkipsUnreadableReferrers(t *testing.T) {
+	subject := pushImage(t, true)
+	if _, err := Push(subject, []byte(`{"bundle":"good"}`), "t"); err != nil {
+		t.Fatal(err)
+	}
+	// A bundle manifest whose layer was never uploaded.
+	desc, _ := remote.Head(subject)
+	if err := remote.WriteLayer(subject.Context(), static.NewLayer(emptyConfig, emptyMediaType)); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(manifest{
+		SchemaVersion: 2, MediaType: types.OCIManifestSchema1, ArtifactType: BundleMediaType,
+		Config:  descriptorOf(emptyConfig, emptyMediaType),
+		Layers:  []v1.Descriptor{descriptorOf([]byte(`{"bundle":"missing"}`), BundleMediaType)},
+		Subject: &v1.Descriptor{MediaType: desc.MediaType, Digest: desc.Digest, Size: desc.Size},
+	})
+	sum := sha256.Sum256(raw)
+	if err := remote.Put(subject.Context().Digest("sha256:"+hex.EncodeToString(sum[:])), rawManifest(raw)); err != nil {
+		t.Fatal(err)
+	}
+	got, skipped, err := Fetch(subject)
+	if err != nil || len(got) != 1 || string(got[0]) != `{"bundle":"good"}` || len(skipped) != 1 {
+		t.Errorf("got %d bundle(s), skipped %v, err %v", len(got), skipped, err)
+	}
 }

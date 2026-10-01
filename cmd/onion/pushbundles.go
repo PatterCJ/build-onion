@@ -34,7 +34,7 @@ func cmdPushBundles(args []string) error {
 		return fmt.Errorf("--image: %w", err)
 	}
 	opts := []remote.Option{remote.WithAuthFromKeychain(authn.DefaultKeychain)}
-	existing, err := ocibundle.Fetch(subject, opts...)
+	existing, _, err := ocibundle.Fetch(subject, opts...)
 	if err != nil {
 		return err
 	}

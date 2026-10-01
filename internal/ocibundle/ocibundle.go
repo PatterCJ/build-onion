@@ -26,6 +26,7 @@ const (
 	// maxBundle bounds what is read from a registry for one bundle, and
 	// maxReferrers how many referrers of one image are examined.
 	maxBundle    = 16 << 20
+	maxTotal     = 64 << 20
 	maxReferrers = 200
 )
 
@@ -91,31 +92,38 @@ func Push(subject name.Digest, bundleJSON []byte, predicateType string, opts ...
 // differ in how they report a referrer's type, so neither the referrers
 // list nor server-side filtering is relied on. Blobs are checked against
 // their digests as they are read.
-func Fetch(subject name.Digest, opts ...remote.Option) ([][]byte, error) {
+//
+// A referrer that can't be read is skipped and described in skipped, so one
+// broken or hostile entry doesn't hide the others; err is for failures that
+// leave nothing to read.
+func Fetch(subject name.Digest, opts ...remote.Option) (bundles [][]byte, skipped []string, err error) {
 	idx, err := remote.Referrers(subject, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("referrers of %s: %w", subject, err)
+		return nil, nil, fmt.Errorf("referrers of %s: %w", subject, err)
 	}
 	im, err := idx.IndexManifest()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(im.Manifests) > maxReferrers {
-		return nil, fmt.Errorf("%s has %d referrers; refusing to examine more than %d", subject, len(im.Manifests), maxReferrers)
+		return nil, nil, fmt.Errorf("%s has %d referrers; refusing to examine more than %d", subject, len(im.Manifests), maxReferrers)
 	}
 	repo := subject.Context()
-	var out [][]byte
+	var total int64
+	skip := func(f string, a ...any) { skipped = append(skipped, fmt.Sprintf(f, a...)) }
 	for _, d := range im.Manifests {
 		if d.MediaType != types.OCIManifestSchema1 {
 			continue
 		}
 		desc, err := remote.Get(repo.Digest(d.Digest.String()), opts...)
 		if err != nil {
-			return nil, fmt.Errorf("bundle manifest %s: %w", d.Digest, err)
+			skip("referrer %s: %v", d.Digest, err)
+			continue
 		}
 		var m manifest
 		if err := json.Unmarshal(desc.Manifest, &m); err != nil {
-			return nil, fmt.Errorf("bundle manifest %s: %w", d.Digest, err)
+			skip("referrer %s: %v", d.Digest, err)
+			continue
 		}
 		if m.ArtifactType != BundleMediaType || m.Subject == nil || m.Subject.Digest.String() != subject.DigestStr() {
 			continue
@@ -124,17 +132,20 @@ func Fetch(subject name.Digest, opts ...remote.Option) ([][]byte, error) {
 			if string(l.MediaType) != BundleMediaType {
 				continue
 			}
-			if l.Size > maxBundle {
-				return nil, fmt.Errorf("bundle %s is %d bytes; refusing more than %d", l.Digest, l.Size, maxBundle)
+			if l.Size > maxBundle || total+l.Size > maxTotal {
+				skip("bundle %s: %d bytes is over the size limit", l.Digest, l.Size)
+				continue
 			}
 			blob, err := readBlob(repo, l, opts)
 			if err != nil {
-				return nil, err
+				skip("bundle %s: %v", l.Digest, err)
+				continue
 			}
-			out = append(out, blob)
+			total += int64(len(blob))
+			bundles = append(bundles, blob)
 		}
 	}
-	return out, nil
+	return bundles, skipped, nil
 }
 
 func readBlob(repo name.Repository, l v1.Descriptor, opts []remote.Option) ([]byte, error) {
