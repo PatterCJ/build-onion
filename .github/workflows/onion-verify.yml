@@ -163,7 +163,7 @@ jobs:
       - name: Rebuild — fetch and hermetic build from the same hashed inputs
         run: |
           "$ONION" validate --manifest "$MANIFEST" --github-output "$GITHUB_OUTPUT"
-          "$ONION" fetch --manifest "$MANIFEST" --snapshot "$VERIFIED/source.json" --cache "$RUNNER_TEMP/deps" \
+          "$ONION" fetch --manifest "$MANIFEST" --policy "$POLICY" --snapshot "$VERIFIED/source.json" --cache "$RUNNER_TEMP/deps" \
             --egress-out "$VERIFIED/egress.json"
           "$ONION" build --manifest "$MANIFEST" --snapshot "$VERIFIED/source.json" \
             --cache "$RUNNER_TEMP/deps" --out "$VERIFIED/out/files" \

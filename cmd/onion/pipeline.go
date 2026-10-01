@@ -119,22 +119,14 @@ func cmdGate(args []string) error {
 	if err != nil {
 		return err
 	}
-	// A policy file in the repository applies whether or not the workflow
-	// names it, so a caller can't drop it by leaving the input out.
-	polFile, polRel := *policyPath, *policyPath
-	if polFile == "" {
-		if _, err := os.Stat(filepath.Join(s.source, policy.DefaultPath)); err == nil {
-			polFile, polRel = filepath.Join(s.source, policy.DefaultPath), policy.DefaultPath
-		}
-	}
-	pol, _, err := policy.Load(polFile)
+	pol, polFile, polRel, err := loadPolicy(s.source, *policyPath)
 	if err != nil {
 		return err
 	}
 	if polFile == "" {
 		fmt.Fprintln(os.Stderr, "gate: policy: built-in default (no "+policy.DefaultPath+")")
 	} else {
-		fmt.Fprintf(os.Stderr, "gate: policy: %s\n", polRel)
+		fmt.Fprintf(os.Stderr, "gate: policy: %s (mode %s)\n", polRel, orDefault(pol.Mode, policy.ModeEnforce))
 	}
 	// The snapshot isn't evaluated by the gate, but the gate only runs
 	// against a checkout that still matches it.
@@ -186,6 +178,10 @@ func printGate(v *gate.Verdict) {
 	for _, f := range v.SensitiveChange {
 		fmt.Fprintf(w, "gate: build-sensitive change: %s\n", f)
 	}
+	for _, wb := range v.WouldBlock {
+		fmt.Fprintf(w, "gate: report mode, would block: %s\n", wb)
+		annotate("warning", "onion gate: would block (report mode)", wb)
+	}
 	if len(v.SensitiveChange) > 0 {
 		annotate("notice", "onion gate: build configuration changed", "Review these changes: "+strings.Join(v.SensitiveChange, ", "))
 	}
@@ -195,6 +191,29 @@ func printGate(v *gate.Verdict) {
 	if v.TagSigner != "" {
 		fmt.Fprintf(w, "gate: release tag signed by %s\n", v.TagSigner)
 	}
+}
+
+// loadPolicy reads the named policy, or the repository's
+// .build-onion/policy.yml when none is named: a policy file in the
+// repository applies whether or not the workflow names it, so a caller can't
+// drop it by leaving the input out. file is "" for the built-in policy; rel
+// is the policy's path relative to the repository.
+func loadPolicy(source, named string) (pol *policy.Policy, file, rel string, err error) {
+	file, rel = named, named
+	if file == "" {
+		if _, err := os.Stat(filepath.Join(source, policy.DefaultPath)); err == nil {
+			file, rel = filepath.Join(source, policy.DefaultPath), policy.DefaultPath
+		}
+	}
+	pol, _, err = policy.Load(file)
+	return pol, file, rel, err
+}
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 // onion record job|workflow|build-onion
@@ -361,6 +380,7 @@ func cmdProxy(args []string) error {
 	listen := fs.String("listen", "127.0.0.1:3128", "address to listen on")
 	rulesPath := fs.String("rules", "", "JSON array of egress rules (required)")
 	logPath := fs.String("log", "", "append one JSON line per connection attempt here (required)")
+	report := fs.Bool("report", false, "let hosts outside the rules through, logged as unlisted (policy mode: report)")
 	fs.Parse(args)
 	if *rulesPath == "" || *logPath == "" {
 		return errors.New("--rules and --log are required")
@@ -379,5 +399,5 @@ func cmdProxy(args []string) error {
 		return err
 	}
 	defer log.Close()
-	return egress.Serve(*listen, &egress.Proxy{Rules: rules, Log: log}, os.Stdout)
+	return egress.Serve(*listen, &egress.Proxy{Rules: rules, Log: log, Report: *report}, os.Stdout)
 }

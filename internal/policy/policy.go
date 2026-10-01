@@ -25,9 +25,19 @@ const APIVersion = "build-onion/policy/v1"
 // DefaultPath is where the gate looks for a policy when none is named.
 const DefaultPath = ".build-onion/policy.yml"
 
+// Modes. In report mode the gate and the fetch step record what they would
+// block instead of blocking, so a team can adopt a policy and see its gaps
+// before enforcing it. peel grades what would have been blocked as findings.
+const (
+	ModeEnforce = "enforce"
+	ModeReport  = "report"
+)
+
 type Policy struct {
-	APIVersion string  `yaml:"apiVersion" json:"apiVersion"`
-	Release    Release `yaml:"release" json:"release"`
+	APIVersion string `yaml:"apiVersion" json:"apiVersion"`
+	// Mode is enforce (the default) or report.
+	Mode    string  `yaml:"mode" json:"mode,omitempty"`
+	Release Release `yaml:"release" json:"release"`
 	// SensitivePaths are added to the built-in list (workflows, manifest,
 	// lockfiles, Dockerfile, the policy itself). Globs; "dir/**" matches a subtree.
 	SensitivePaths []string `yaml:"sensitivePaths" json:"sensitivePaths,omitempty"`
@@ -125,6 +135,9 @@ var forbiddenEvents = map[string]bool{"pull_request_target": true, "workflow_run
 
 func (p *Policy) Validate() error {
 	var errs []error
+	if p.Mode != "" && p.Mode != ModeEnforce && p.Mode != ModeReport {
+		errs = append(errs, fmt.Errorf("mode %q: want %s or %s", p.Mode, ModeEnforce, ModeReport))
+	}
 	if p.Repository.MinApprovals < 0 {
 		errs = append(errs, errors.New("repository.minApprovals can't be negative"))
 	}
@@ -153,6 +166,9 @@ func (p *Policy) Validate() error {
 	}
 	return errors.Join(errs...)
 }
+
+// Report reports whether the policy records rather than blocks.
+func (p *Policy) Report() bool { return p.Mode == ModeReport }
 
 // Forbidden reports whether the pipeline must refuse to run at all.
 func Forbidden(event string) bool { return forbiddenEvents[event] }

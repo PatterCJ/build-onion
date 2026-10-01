@@ -38,6 +38,9 @@ type Runner struct {
 	// Onion is the static onion binary mounted into the proxy container;
 	// defaults to the running executable.
 	Onion string
+	// Report runs fetch behind the proxy in every case, recording hosts
+	// outside the allow-list instead of denying them (policy mode: report).
+	Report bool
 }
 
 func (r Runner) docker() string {
@@ -55,7 +58,7 @@ func (r Runner) Fetch(srcDir, cacheDir string, m *manifest.Manifest) (*egress.Re
 	if m.Dependencies.Fetch == "" {
 		return &egress.Record{Mode: egress.ModeNone}, nil
 	}
-	if len(m.Dependencies.Egress) == 0 {
+	if len(m.Dependencies.Egress) == 0 && !r.Report {
 		err := r.run(srcDir, cacheDir, m, m.Dependencies.Fetch, []string{}, m.Dependencies.Env)
 		return &egress.Record{Mode: egress.ModeUnrestricted}, err
 	}
@@ -120,6 +123,16 @@ func (r Runner) run(srcDir, cacheDir string, m *manifest.Manifest, script string
 // ignores those variables has no route anywhere. Its DNS upstream is set to
 // an address with nothing listening, so external names can't be resolved (or
 // used to smuggle data out) from inside it.
+// proxyArgs runs `onion proxy` inside its container; report mode records
+// hosts outside the allow-list instead of denying them.
+func proxyArgs(report bool) []string {
+	args := []string{"proxy", "--listen", "0.0.0.0:3128", "--rules", "/egress/rules.json", "--log", "/egress/egress.jsonl"}
+	if report {
+		args = append(args, "--report")
+	}
+	return args
+}
+
 func (r Runner) fetchRestricted(srcDir, cacheDir string, m *manifest.Manifest) (rec *egress.Record, err error) {
 	proxyImage := r.ProxyImage
 	if proxyImage == "" {
@@ -169,13 +182,13 @@ func (r Runner) fetchRestricted(srcDir, cacheDir string, m *manifest.Manifest) (
 	if err := r.docker1("network", "create", "--internal", netIn); err != nil {
 		return nil, err
 	}
-	if err := r.docker1("run", "-d", "--name", proxyName, "--network", netOut,
-		"--user", strconv.Itoa(os.Getuid())+":"+strconv.Itoa(os.Getgid()),
+	run := append([]string{"run", "-d", "--name", proxyName, "--network", netOut,
+		"--user", strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid()),
 		"--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-		"-v", onion+":/onion:ro", "-v", work+":/egress",
+		"-v", onion + ":/onion:ro", "-v", work + ":/egress",
 		"--entrypoint", "/onion", proxyImage,
-		"proxy", "--listen", "0.0.0.0:3128", "--rules", "/egress/rules.json", "--log", "/egress/egress.jsonl",
-	); err != nil {
+	}, proxyArgs(r.Report)...)
+	if err := r.docker1(run...); err != nil {
 		return nil, err
 	}
 	if err := r.docker1("network", "connect", "--alias", "onion-proxy", netIn, proxyName); err != nil {
@@ -206,7 +219,11 @@ func (r Runner) fetchRestricted(srcDir, cacheDir string, m *manifest.Manifest) (
 	if err != nil {
 		return nil, err
 	}
-	rec = &egress.Record{Mode: egress.ModeAllowList, Rules: m.Dependencies.Egress, ProxyImage: proxyImage, Summary: summary}
+	mode := egress.ModeAllowList
+	if r.Report {
+		mode = egress.ModeRecord
+	}
+	rec = &egress.Record{Mode: mode, Rules: m.Dependencies.Egress, ProxyImage: proxyImage, Summary: summary}
 	if summary.Denied > 0 {
 		var denied []string
 		for _, c := range summary.Connections {

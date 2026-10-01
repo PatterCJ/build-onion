@@ -278,7 +278,7 @@ jobs:
           echo "${{ needs.resolve.outputs.cli-digest }}  $ONION" | sha256sum -c
           chmod +x "$ONION"
           "$ONION" source verify --manifest "$MANIFEST" --snapshot /tmp/onion-snap/source.json --expect "$SNAPSHOT"
-          "$ONION" fetch --manifest "$MANIFEST" --snapshot /tmp/onion-snap/source.json --cache "$RUNNER_TEMP/deps" \
+          "$ONION" fetch --manifest "$MANIFEST" --policy "$POLICY" --snapshot /tmp/onion-snap/source.json --cache "$RUNNER_TEMP/deps" \
             --egress-out /tmp/onion-egress/build-line.json
           tar -C "$RUNNER_TEMP/deps" -cf "$RUNNER_TEMP/deps.tar" .
           mkdir -p "$ONION_REC"

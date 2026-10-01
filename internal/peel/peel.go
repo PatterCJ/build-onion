@@ -28,6 +28,7 @@ import (
 	"github.com/PatterCJ/build-onion/internal/inventory"
 	"github.com/PatterCJ/build-onion/internal/lockfile"
 	"github.com/PatterCJ/build-onion/internal/manifest"
+	"github.com/PatterCJ/build-onion/internal/policy"
 	"github.com/PatterCJ/build-onion/internal/source"
 	"github.com/PatterCJ/build-onion/internal/tagsig"
 	"github.com/PatterCJ/build-onion/internal/trust"
@@ -378,6 +379,12 @@ func checkGate(r *Report, inv *inventory.Inventory) {
 		return
 	}
 	r.check("gate", "release allowed", g.Releasable && !g.Blocked, Finding, "%s", g.Reason)
+	if g.Mode == policy.ModeReport {
+		r.grade("gate", "policy mode", Note, "report: the gate and fetch recorded what they would block instead of blocking")
+	}
+	if len(g.WouldBlock) > 0 {
+		r.grade("gate", "would have been blocked", Finding, "%d reason(s) in report mode%s", len(g.WouldBlock), listNote(g.WouldBlock))
+	}
 	if g.TagSigner != "" {
 		r.grade("gate", "release tag signed", Passed, "by %s", g.TagSigner)
 	}
@@ -463,6 +470,9 @@ func checkEgress(r *Report, inv *inventory.Inventory) {
 	case e.Mode == egress.ModeUnrestricted:
 		r.grade("egress", "fetch network", Degraded, "fetch had unrestricted network; declare dependencies.egress to restrict and record it")
 		return
+	case e.Mode == egress.ModeRecord:
+		checkRecordedEgress(r, e)
+		return
 	case e.Mode != egress.ModeAllowList:
 		r.grade("egress", "fetch network", Unsupported, "unknown egress mode %q", e.Mode)
 		return
@@ -488,6 +498,39 @@ func checkEgress(r *Report, inv *inventory.Inventory) {
 	}
 	r.grade("egress", "fetch connections", Passed, "%d connection(s) to %d destination(s), all within the allow-list (%s)",
 		total, len(hosts), strings.Join(declared, ", "))
+}
+
+// checkRecordedEgress grades a report-mode fetch: the proxy recorded every
+// connection instead of denying those outside the allow-list. A connection
+// enforce mode would have denied is a finding; with no allow-list at all,
+// fetch was in effect unrestricted (degraded), and the allow-list that
+// covers what it reached is shown.
+func checkRecordedEgress(r *Report, e *egress.Record) {
+	r.check("egress", "proxy pinned by digest", manifest.IsPinnedImage(e.ProxyImage), Finding, "%s", e.ProxyImage)
+	if e.Summary == nil {
+		r.grade("egress", "fetch connections", Failed, "report mode without a connection log")
+		return
+	}
+	var outside, proposed []string
+	for _, c := range e.Summary.Connections {
+		if !c.Allowed {
+			outside = append(outside, fmt.Sprintf("%s:%d denied (%s)", c.Host, c.Port, c.Reason))
+		} else if _, ok := egress.Match(e.Rules, c.Host, c.Port); !ok {
+			outside = append(outside, fmt.Sprintf("%s:%d", c.Host, c.Port))
+		}
+	}
+	for _, p := range e.Summary.Proposed() {
+		proposed = append(proposed, fmt.Sprintf("%s:%d", p.Host, p.EffectivePort()))
+	}
+	switch {
+	case len(e.Rules) == 0:
+		r.grade("egress", "fetch network", Degraded, "report mode with no allow-list: fetch could reach any host")
+	case len(outside) > 0:
+		r.grade("egress", "fetch connections", Finding, "report mode: %d connection(s) enforce mode would have denied%s", len(outside), listNote(outside))
+	default:
+		r.grade("egress", "fetch connections", Passed, "report mode: every connection was within the allow-list")
+	}
+	r.grade("egress", "allow-list for what fetch reached", Note, "%s", orNone(strings.Join(proposed, ", ")))
 }
 
 // checkRepoProtections reports what the gate verified about the repository.

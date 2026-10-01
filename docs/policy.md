@@ -30,6 +30,20 @@ blockOpaqueInputs: true
 
 Save it as `.build-onion/policy.yml` and both the build and security lines apply it, whether or not the workflows name it (the `policy` input points elsewhere). With no policy file, the defaults above apply.
 
+## Report mode: adopt first, enforce later
+
+```yaml
+mode: report      # default: enforce
+```
+
+In report mode nothing the policy adds blocks a build; it is recorded instead, so a team can turn build-onion on and see its gaps before enforcing it:
+
+- The gate records what it would have blocked (`wouldBlock` in the verdict) and raises a warning annotation for each.
+- The fetch step always runs behind the egress proxy, which **records** connections outside `dependencies.egress` instead of denying them, and prints an allow-list covering everything fetch reached, ready to paste into the manifest. Loopback, link-local and cloud metadata addresses, private addresses without `private: true`, and IP-address targets are still refused.
+- Builds are sealed as usual, with the mode in the inventory, and `peel` grades everything that would have been blocked or denied as a FINDING, so a deploy gate still refuses it.
+
+`pull_request_target` and `workflow_run` are refused in every mode.
+
 ## Signed release tags
 
 ```yaml

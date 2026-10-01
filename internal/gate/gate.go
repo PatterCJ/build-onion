@@ -67,24 +67,41 @@ type Verdict struct {
 	PolicyDigest string     `json:"policyDigest,omitempty"`
 	// TagSigner is the allowed key that signed the release tag, when the
 	// policy requires signed tags.
-	TagSigner string  `json:"tagSigner,omitempty"`
-	Context   Context `json:"context"`
+	TagSigner string `json:"tagSigner,omitempty"`
+	// Mode is the policy's mode. In report mode, what would have blocked the
+	// build is in WouldBlock and Blocked stays false.
+	Mode       string   `json:"mode,omitempty"`
+	WouldBlock []string `json:"wouldBlock,omitempty"`
+	Context    Context  `json:"context"`
 }
 
 // Evaluate runs the gate.
 func Evaluate(p Params, pol *policy.Policy, m *manifest.Manifest) (*Verdict, error) {
-	v := &Verdict{Base: p.Base, Context: p.Context}
+	v := &Verdict{Base: p.Base, Context: p.Context, Mode: pol.Mode}
+	// Refused in every mode: report mode never runs under these events.
 	if policy.Forbidden(p.Context.Event) {
 		v.Blocked = true
 		v.BlockedBy = append(v.BlockedBy, fmt.Sprintf("event %s runs untrusted code with repository privileges; build-onion refuses it", p.Context.Event))
 		v.Reason = "forbidden event"
 		return v, nil
 	}
+	if err := evaluate(v, p, pol, m); err != nil {
+		return nil, err
+	}
+	if pol.Report() && v.Blocked {
+		v.WouldBlock, v.Blocked, v.BlockedBy = v.BlockedBy, false, nil
+	}
+	return v, nil
+}
+
+func evaluate(v *Verdict, p Params, pol *policy.Policy, m *manifest.Manifest) error {
 	if pol.RequireBuildInputs && len(m.Build.Inputs) == 0 {
 		v.Blocked = true
 		v.BlockedBy = append(v.BlockedBy, "policy requires build.inputs: declare which files the build may read")
-		v.Reason = "build inputs not declared"
-		return v, nil
+		if !pol.Report() {
+			v.Reason = "build inputs not declared"
+			return nil
+		}
 	}
 	v.Releasable, v.Reason = pol.Releasable(p.Context.Event, p.Context.Ref)
 	if v.Releasable && p.Fork {
@@ -102,7 +119,7 @@ func Evaluate(p Params, pol *policy.Policy, m *manifest.Manifest) (*Verdict, err
 
 	changed, known, err := changedFiles(p.SourceDir, p.Base)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	v.ChangeKnown, v.ChangedFiles = known, len(changed)
 	patterns := SensitivePatterns(pol, m, p.ManifestPath, p.PolicyPath)
@@ -113,7 +130,7 @@ func Evaluate(p Params, pol *policy.Policy, m *manifest.Manifest) (*Verdict, err
 		}
 		opaque, err := IsOpaque(filepath.Join(p.SourceDir, filepath.FromSlash(f)))
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if opaque {
 			v.OpaqueChange = append(v.OpaqueChange, f)
@@ -132,7 +149,7 @@ func Evaluate(p Params, pol *policy.Policy, m *manifest.Manifest) (*Verdict, err
 		v.Blocked = true
 		v.BlockedBy = append(v.BlockedBy, fmt.Sprintf("policy blocks binary changes the build can read: %s", strings.Join(v.OpaqueInputs, ", ")))
 	}
-	return v, nil
+	return nil
 }
 
 // SensitivePatterns are paths whose change alters how the build runs rather
