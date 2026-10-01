@@ -170,6 +170,18 @@ jobs:
           gh attestation verify "oci://$IMAGE" --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/onion-verify.yml" \
             --source-digest "$GITHUB_SHA"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        id: native
+        continue-on-error: true
+        with:
+          name: onion-native-bundles
+          path: /tmp/native-bundles
+      - name: Peeled using only onion attest's bundles (comparison)
+        if: steps.native.outcome == 'success'
+        continue-on-error: true
+        run: |
+          docker run --rm -e GITHUB_TOKEN -v "$HOME/.docker:/home/nonroot/.docker:ro" -v /tmp/native-bundles:/bundles:ro "$IMAGE" \
+            peel "$IMAGE" --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --bundles /bundles | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Peeled by the previous release
         run: |
           if [ -z "$PREVIOUS" ]; then

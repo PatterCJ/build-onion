@@ -1,0 +1,36 @@
+{
+ "buildDefinition": {
+  "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+  "externalParameters": {
+   "workflow": {
+    "ref": "refs/tags/v0.2.1",
+    "repository": "https://github.com/PatterCJ/build-onion",
+    "path": ".github/workflows/release.yml"
+   }
+  },
+  "internalParameters": {
+   "github": {
+    "event_name": "push",
+    "repository_id": "1396531592",
+    "repository_owner_id": "89419020",
+    "runner_environment": "github-hosted"
+   }
+  },
+  "resolvedDependencies": [
+   {
+    "uri": "git+https://github.com/PatterCJ/build-onion@refs/tags/v0.2.1",
+    "digest": {
+     "gitCommit": "eef9130eb38ada0d8c6ab0ea0dcc716974020fd4"
+    }
+   }
+  ]
+ },
+ "runDetails": {
+  "builder": {
+   "id": "https://github.com/PatterCJ/build-onion/.github/workflows/onion-verify.yml@refs/tags/v0.2.1"
+  },
+  "metadata": {
+   "invocationId": "https://github.com/PatterCJ/build-onion/actions/runs/36792116882/attempts/1"
+  }
+ }
+}
