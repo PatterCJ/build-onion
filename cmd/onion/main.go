@@ -56,6 +56,7 @@ Usage:
   onion compare   --staged DIR --rebuilt DIR [--out FILE]
   onion upstream  [--source DIR] [--manifest FILE] [--snapshot FILE] [--out FILE] [-v]
   onion digest    [--oci] PATH...
+  onion attest    (--subject NAME@sha256:HEX | --subject-checksums FILE) (--predicate FILE --predicate-type URI | --provenance github) --out FILE
   onion inventory --snapshot FILE --records DIR --repository URL --commit SHA --tree SHA --files DIR [flags]
   onion peel      ARTIFACT --repo OWNER/REPO [--commit SHA] [--ref REFS] [--baseline ARTIFACT] [--trust FILE] [--bundles DIR] [--source DIR] [--rebuild] [--oci] [--packages] [--json]
   onion trust     add --trust FILE --tag TAG [--repo OWNER/REPO]
@@ -74,6 +75,7 @@ func main() {
 		"record":    cmdRecord,
 		"compare":   cmdCompare,
 		"upstream":  cmdUpstream,
+		"attest":    cmdAttest,
 		"trust":     cmdTrust,
 		"proxy":     cmdProxy,
 		"fetch":     cmdFetch,

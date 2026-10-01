@@ -478,6 +478,37 @@ jobs:
           predicate-type: https://github.com/PatterCJ/build-onion/inventory/v1
           predicate-path: ${{ runner.temp }}/inventory.json
 
+      # Comparison while onion attest is new: the same three records for the
+      # same subjects, signed by onion's own signer. actions/attest's bundles
+      # remain the published ones; these are uploaded separately so a caller
+      # can peel with them alone.
+      - name: Seal with onion attest (comparison)
+        id: native
+        continue-on-error: true
+        env:
+          HAS_FILES: ${{ steps.subjects.outputs.has_files }}
+          IMAGE_NAME: ${{ steps.subjects.outputs.image_name }}
+          IMAGE_DIGEST: ${{ steps.subjects.outputs.image_digest }}
+        run: |
+          dir=$RUNNER_TEMP/native-bundles
+          mkdir -p "$dir"
+          seal() {
+            local kind=$1; shift
+            "$ONION" attest "$@" --provenance github --out "$dir/$kind-provenance.json"
+            "$ONION" attest "$@" --predicate "/tmp/onion-sbom/$kind.cdx.json" \
+              --predicate-type https://cyclonedx.org/bom --out "$dir/$kind-sbom.json"
+            "$ONION" attest "$@" --predicate "$RUNNER_TEMP/inventory.json" \
+              --predicate-type https://github.com/PatterCJ/build-onion/inventory/v1 --out "$dir/$kind-inventory.json"
+          }
+          if [ "$HAS_FILES" = true ]; then seal files --subject-checksums "$RUNNER_TEMP/files.sha256"; fi
+          if [ -n "$IMAGE_DIGEST" ]; then seal image --subject "$IMAGE_NAME@$IMAGE_DIGEST"; fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.native.outcome == 'success'
+        with:
+          name: onion-native-bundles
+          path: ${{ runner.temp }}/native-bundles
+          if-no-files-found: error
+
       - name: Collect bundles for offline peeling
         env:
           IMAGE_DIGEST: ${{ steps.subjects.outputs.image_digest }}

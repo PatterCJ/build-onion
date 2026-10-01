@@ -265,7 +265,7 @@ CGO_ENABLED=0 go build -trimpath -o onion ./cmd/onion
 
 Or run it from the published image: `docker run --rm ghcr.io/pattercj/build-onion:<tag> peel …`. On GitHub Actions, every block, finding and coverage gap is also raised as an annotation on the run's summary page. `GITHUB_TOKEN`, when set, authenticates GitHub API requests; the unauthenticated limit is 60 an hour.
 
-Commands you run yourself: [`peel`](#onion-peel), [`trust add`](#onion-trust-add), [`validate`](#onion-validate), [`upstream`](#onion-upstream), [`record scan`](#onion-record), [`digest`](#onion-digest). The rest are the steps the reusable workflows run, and can drive the same pipeline from another CI system.
+Commands you run yourself: [`peel`](#onion-peel), [`trust add`](#onion-trust-add), [`attest`](#onion-attest), [`validate`](#onion-validate), [`upstream`](#onion-upstream), [`record scan`](#onion-record), [`digest`](#onion-digest). The rest are the steps the reusable workflows run, and can drive the same pipeline from another CI system.
 
 ### Flags most commands share
 
@@ -381,6 +381,25 @@ onion record scan --name NAME --status STATUS --subject-kind KIND --subject DIGE
 | `--out FILE` | Record to write (required). |
 
 `record job` (`--name`, `--runner`, repeatable `--tool name=version`), `record workflow` (`--role`, `--ref`, `--file`) and `record build-onion` (`--repository`, `--commit`, `--cli-digest`) record the pipeline itself; each takes `--out`.
+
+### `onion attest`
+
+Sign an in-toto statement about one or more artifacts and write it as a Sigstore bundle, keyless: a short-lived key, certified by Fulcio for the CI job's OIDC identity and recorded in Rekor. `onion peel --bundles` verifies the result like any other bundle.
+
+```sh
+onion attest --subject NAME@sha256:HEX --predicate FILE --predicate-type URI --out bundle.json
+onion attest --subject-checksums files.sha256 --provenance github --out provenance.json
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--out FILE` | *(required)* | Bundle to write. |
+| `--subject NAME@sha256:HEX` | | A subject; repeatable. |
+| `--subject-checksums FILE` | | Subjects from `sha256sum` output. |
+| `--predicate FILE`, `--predicate-type URI` | | The predicate to sign. |
+| `--provenance github` | | Generate SLSA v1 provenance for the current GitHub Actions job instead, in the same form as GitHub's own. |
+| `--token SOURCE` | `github` | Where the OIDC token comes from: `github` (the job needs `id-token: write`), or `env:NAME` for a token another CI provides. |
+| `--fulcio URL`, `--rekor URL` | public-good Sigstore | Sigstore instances to use. |
 
 ### `onion digest`
 

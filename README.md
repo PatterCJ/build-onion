@@ -147,7 +147,7 @@ NOTE lines give context without affecting the verdict.
 
 ## The `onion` CLI
 
-The CLI takes everything as flags and has no dependency on GitHub; the reusable workflows supply events, refs and Sigstore signing. Its commands (`validate`, `source`, `gate`, `fetch`, `build`, `compare`, `upstream`, `record`, `inventory`, `peel`, `trust`) can be driven from any CI system.
+The CLI takes everything as flags and has no dependency on GitHub; the reusable workflows supply events, refs and Sigstore signing. Its commands (`validate`, `source`, `gate`, `fetch`, `build`, `compare`, `upstream`, `record`, `inventory`, `attest`, `peel`, `trust`) can be driven from any CI system.
 
 ## Development
 
