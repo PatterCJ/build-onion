@@ -99,6 +99,7 @@ sensitivePaths: [scripts/release/**]
 sensitivePresets: [make, python]
 requireBuildInputs: true
 blockOpaqueInputs: true
+blockInstallScripts: true
 
 repository:
   requirePullRequest: true
@@ -120,6 +121,7 @@ repository:
 | `sensitivePresets` | | Named sets of build-system files: `autotools`, `bazel`, `cmake`, `docker`, `go`, `gradle`, `make`, `maven`, `meson`, `node`, `python`, `rust`. |
 | `requireBuildInputs` | `false` | Refuse to build a manifest without `build.inputs`. |
 | `blockOpaqueInputs` | `false` | Refuse to build a change that adds or modifies a binary file (by content) the build can read. |
+| `blockInstallScripts` | `false` | Turn off npm dependency install scripts for the whole fetch step (`npm_config_ignore_scripts=true`, overriding the manifest), and refuse a fetch command that turns them back on (`--ignore-scripts=false`, `--no-ignore-scripts`, `npm config set ignore-scripts false`). In report mode, records instead which locked packages (`hasInstallScript`) would run scripts. |
 | `repository.requirePullRequest` | `false` | The release branch's rules must require pull requests. |
 | `repository.minApprovals` | `0` | The release branch's rules must require at least this many approvals. |
 | `repository.requireCodeOwnerReview` | `false` | The release branch's rules must require code-owner review. |

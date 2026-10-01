@@ -799,3 +799,32 @@ func TestReportModeGrades(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallScriptsAndEgressSource(t *testing.T) {
+	w := newWorld()
+	w.inv.Dependencies = append(w.inv.Dependencies, lockfile.Package{Ecosystem: "npm", Name: "esbuild", Version: "0.24.0", InstallScript: true})
+	w.inv.Build.Fetch = "npm ci"
+	if r := Run(w.input(t)); !strings.Contains(lines(r), "NOTE inventory/dependency install scripts: 1 package(s) ran install scripts during fetch: esbuild@0.24.0") {
+		t.Errorf("install scripts not noted:\n%s", lines(r))
+	}
+	w.inv.Build.Fetch = "npm ci --ignore-scripts"
+	if r := Run(w.input(t)); !strings.Contains(lines(r), "the fetch command asks npm not to run them") {
+		t.Errorf("command-disabled scripts not noted:\n%s", lines(r))
+	}
+	w.inv.Build.Fetch = "npm ci"
+	w.inv.Egress.InstallScriptsDisabled = true
+	if r := Run(w.input(t)); !strings.Contains(lines(r), "policy turned them off for the whole fetch step") {
+		t.Errorf("policy-disabled scripts not noted:\n%s", lines(r))
+	}
+
+	w = newWorld()
+	w.inv.Source.Snapshot = digest.Bytes([]byte("snapshot"))
+	w.inv.Egress.Snapshot = w.inv.Source.Snapshot
+	if r := Run(w.input(t)); r.Verdict != Passed || !strings.Contains(lines(r), "PASSED egress/fetch ran on this source") {
+		t.Errorf("matching egress source:\n%s", lines(r))
+	}
+	w.inv.Egress.Snapshot = digest.Bytes([]byte("another snapshot"))
+	if r := Run(w.input(t)); r.Verdict != Finding || !strings.Contains(lines(r), "FINDING egress/fetch ran on this source") {
+		t.Errorf("egress from another source:\n%s", lines(r))
+	}
+}

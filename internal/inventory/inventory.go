@@ -78,11 +78,13 @@ type Builder struct {
 }
 
 type Build struct {
-	Fetch   string            `json:"fetch,omitempty"`
-	Run     string            `json:"run"`
-	Env     map[string]string `json:"env,omitempty"`
-	Network string            `json:"network"`
-	Image   *ImageBuild       `json:"image,omitempty"`
+	Fetch string `json:"fetch,omitempty"`
+	// FetchEnv is dependencies.env: the fetch step's own environment.
+	FetchEnv map[string]string `json:"fetchEnv,omitempty"`
+	Run      string            `json:"run"`
+	Env      map[string]string `json:"env,omitempty"`
+	Network  string            `json:"network"`
+	Image    *ImageBuild       `json:"image,omitempty"`
 	// Inputs is the part of the source the build could read.
 	Inputs *Inputs `json:"inputs,omitempty"`
 }
@@ -173,6 +175,9 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 	if err := egressRec.Check(m); err != nil {
 		return nil, nil, fmt.Errorf("egress: %w", err)
 	}
+	if egressRec.Snapshot != "" && egressRec.Snapshot != p.Snapshot.Digest {
+		return nil, nil, fmt.Errorf("egress record is from fetching source %s, but this build's snapshot is %s", egressRec.Snapshot, p.Snapshot.Digest)
+	}
 	if egressRec.Mode == egress.ModeRecord && (p.Gate == nil || p.Gate.Mode != policy.ModeReport) {
 		return nil, nil, errors.New("egress was only recorded, not enforced, but the gate didn't run in report mode")
 	}
@@ -191,10 +196,11 @@ func Generate(p Params) (*Inventory, *manifest.Manifest, error) {
 		Egress:       egressRec,
 		Builder:      Builder{Image: m.Builder.Image},
 		Build: Build{
-			Fetch:   m.Dependencies.Fetch,
-			Run:     m.Build.Run,
-			Env:     m.Build.Env,
-			Network: "none",
+			Fetch:    m.Dependencies.Fetch,
+			FetchEnv: m.Dependencies.Env,
+			Run:      m.Build.Run,
+			Env:      m.Build.Env,
+			Network:  "none",
 		},
 		Run: Run{InvocationURL: p.InvocationURL},
 	}

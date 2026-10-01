@@ -251,3 +251,55 @@ func TestArchives(t *testing.T) {
 		t.Error("non-hex checksum accepted")
 	}
 }
+
+func TestInstallScripts(t *testing.T) {
+	data, err := os.ReadFile("testdata/npm-install-scripts/package-lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, _, err := Parse("package-lock.json", data, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := InstallScripts(res.Packages); len(got) != 1 || got[0] != "esbuild@0.24.0" {
+		t.Errorf("install scripts = %v", got)
+	}
+	for fetch, want := range map[string]bool{
+		"npm ci":                       false,
+		"npm ci --ignore-scripts":      true,
+		"npm ci --ignore-scripts=true": true,
+		"npm ci --ignore-scripts-x":    false,
+	} {
+		if got := ScriptsDisabled(fetch, nil); got != want {
+			t.Errorf("%q: disabled = %v", fetch, got)
+		}
+	}
+	if !ScriptsDisabled("npm ci", map[string]string{"NPM_CONFIG_IGNORE_SCRIPTS": "true"}) {
+		t.Error("npm_config_ignore_scripts not honoured")
+	}
+}
+
+// The spellings that turn npm install scripts back on, which an environment
+// setting can't override.
+func TestScriptsReenabled(t *testing.T) {
+	for fetch, want := range map[string]bool{
+		"npm ci":                  false,
+		"npm ci --ignore-scripts": false,
+		"npm ci && npm rebuild":   false,
+		"npm ci && npm rebuild --ignore-scripts=false":  true,
+		"npm rebuild --ignore-scripts false":            true,
+		"npm install --no-ignore-scripts":               true,
+		"npm config set ignore-scripts false && npm ci": true,
+		"npm_config_ignore_scripts=false npm ci":        true,
+		"npm_config_ignore_scripts= npm ci":             true,
+		"NPM_CONFIG_IGNORE_SCRIPTS=0 npm ci":            true,
+		"npm ci --ignore-scripts=true":                  false,
+	} {
+		if got := ScriptsReenabled(fetch, nil); got != want {
+			t.Errorf("%q: re-enabled = %v, want %v", fetch, got, want)
+		}
+	}
+	if !ScriptsReenabled("npm ci", map[string]string{"npm_config_ignore_scripts": "false"}) {
+		t.Error("env re-enable not seen")
+	}
+}

@@ -183,16 +183,26 @@ func cmdFetch(args []string) error {
 	if err != nil {
 		return err
 	}
+	snapDigest := ""
+	if *snap != "" {
+		sn, err := loadSnapshot(*snap, "")
+		if err != nil {
+			return err
+		}
+		snapDigest = sn.Digest
+	}
 	var rec *egress.Record
 	_, cleanup, err := guarded(s, *snap, "", m, func(dir string) error {
 		var ferr error
-		rec, ferr = builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr, Report: pol.Report()}.Fetch(dir, *cache, m)
+		rec, ferr = builder.Runner{Stdout: os.Stderr, Stderr: os.Stderr, Report: pol.Report(),
+			NoInstallScripts: pol.BlockInstallScripts && !pol.Report()}.Fetch(dir, *cache, m)
 		return ferr
 	})
 	cleanup()
 	// Written even when fetch failed: the record of what was attempted is
 	// the evidence.
 	if rec != nil {
+		rec.Snapshot = snapDigest
 		printEgress(rec)
 		if *egressOut != "" {
 			if werr := writeJSON(*egressOut, rec); werr != nil && err == nil {

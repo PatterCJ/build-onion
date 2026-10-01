@@ -443,3 +443,43 @@ func TestReportMode(t *testing.T) {
 		t.Errorf("forbidden event not refused in report mode: %+v", v)
 	}
 }
+
+func TestBlockInstallScripts(t *testing.T) {
+	f := setup(t)
+	lock, err := os.ReadFile("../lockfile/testdata/npm-install-scripts/package-lock.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(f.dir, "package-lock.json"), lock, 0o644)
+	f.git(t, "add", ".")
+	f.git(t, "commit", "-qm", "npm")
+	m := &manifest.Manifest{Dependencies: manifest.Dependencies{Lockfiles: []string{"package-lock.json"}, Fetch: "npm ci"}}
+	pol := policy.Default()
+	pol.BlockInstallScripts = true
+	eval := func() *Verdict {
+		v, err := Evaluate(Params{SourceDir: f.dir, ManifestPath: "build-onion.yml", Context: Context{Event: "push", Ref: "refs/heads/main"}}, pol, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	// Enforce mode: the fetch step turns scripts off itself; nothing to block,
+	// unless the fetch command turns them back on.
+	if v := eval(); v.Blocked {
+		t.Errorf("enforce mode blocked at the gate: %v", v.BlockedBy)
+	}
+	m.Dependencies.Fetch = "npm ci && npm rebuild --ignore-scripts=false"
+	if v := eval(); !v.Blocked || !strings.Contains(strings.Join(v.BlockedBy, ";"), "turns them back on") {
+		t.Errorf("re-enabled scripts not blocked: %v", v.BlockedBy)
+	}
+	m.Dependencies.Fetch = "npm ci"
+	// Report mode: what the policy would refuse is recorded.
+	pol.Mode = policy.ModeReport
+	if v := eval(); !strings.Contains(strings.Join(v.WouldBlock, ";"), "esbuild@0.24.0") {
+		t.Errorf("report mode didn't record install scripts: %v", v.WouldBlock)
+	}
+	m.Dependencies.Fetch = "npm ci --ignore-scripts"
+	if v := eval(); len(v.WouldBlock) != 0 {
+		t.Errorf("recorded although the fetch disables scripts: %v", v.WouldBlock)
+	}
+}

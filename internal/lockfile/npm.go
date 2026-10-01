@@ -20,6 +20,9 @@ type npmEntry struct {
 	Integrity string `json:"integrity"`
 	Dev       bool   `json:"dev"`
 	Link      bool   `json:"link"`
+	// HasInstallScript marks a package with preinstall, install or
+	// postinstall scripts, which npm runs while installing it.
+	HasInstallScript bool `json:"hasInstallScript"`
 }
 
 // npmV1Entry is a lockfileVersion 1 "dependencies" entry, which nests.
@@ -69,7 +72,7 @@ func parseNpmLock(data []byte, _ Sibling) (Result, error) {
 			if err != nil {
 				return Result{}, fmt.Errorf("%s: %w", key, err)
 			}
-			res.Packages = append(res.Packages, Package{Name: name, Version: e.Version, Archives: archives, Dev: e.Dev})
+			res.Packages = append(res.Packages, Package{Name: name, Version: e.Version, Archives: archives, Dev: e.Dev, InstallScript: e.HasInstallScript})
 		}
 		return res, nil
 	}

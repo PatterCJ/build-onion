@@ -41,6 +41,26 @@ type Runner struct {
 	// Report runs fetch behind the proxy in every case, recording hosts
 	// outside the allow-list instead of denying them (policy mode: report).
 	Report bool
+	// NoInstallScripts turns off npm dependency install scripts for the
+	// whole fetch step (npm_config_ignore_scripts=true, overriding the
+	// manifest), whatever its command does (policy blockInstallScripts).
+	NoInstallScripts bool
+}
+
+// fetchEnv is the fetch step's environment: the manifest's, plus what the
+// policy enforces.
+func (r Runner) fetchEnv(m *manifest.Manifest) map[string]string {
+	env := map[string]string{}
+	for k, v := range m.Dependencies.Env {
+		if r.NoInstallScripts && strings.EqualFold(k, "npm_config_ignore_scripts") {
+			continue
+		}
+		env[k] = v
+	}
+	if r.NoInstallScripts {
+		env["npm_config_ignore_scripts"] = "true"
+	}
+	return env
 }
 
 func (r Runner) docker() string {
@@ -58,11 +78,18 @@ func (r Runner) Fetch(srcDir, cacheDir string, m *manifest.Manifest) (*egress.Re
 	if m.Dependencies.Fetch == "" {
 		return &egress.Record{Mode: egress.ModeNone}, nil
 	}
+	var rec *egress.Record
+	var err error
 	if len(m.Dependencies.Egress) == 0 && !r.Report {
-		err := r.run(srcDir, cacheDir, m, m.Dependencies.Fetch, []string{}, m.Dependencies.Env)
-		return &egress.Record{Mode: egress.ModeUnrestricted}, err
+		err = r.run(srcDir, cacheDir, m, m.Dependencies.Fetch, []string{}, r.fetchEnv(m))
+		rec = &egress.Record{Mode: egress.ModeUnrestricted}
+	} else {
+		rec, err = r.fetchRestricted(srcDir, cacheDir, m)
 	}
-	return r.fetchRestricted(srcDir, cacheDir, m)
+	if rec != nil {
+		rec.InstallScriptsDisabled = r.NoInstallScripts
+	}
+	return rec, err
 }
 
 // Build runs the build step with no network. Only srcDir and the fetched
@@ -198,10 +225,7 @@ func (r Runner) fetchRestricted(srcDir, cacheDir string, m *manifest.Manifest) (
 		return nil, err
 	}
 
-	env := map[string]string{}
-	for k, v := range m.Dependencies.Env {
-		env[k] = v
-	}
+	env := r.fetchEnv(m)
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 		env[k] = "http://onion-proxy:3128"
 	}
