@@ -93,14 +93,37 @@ func References(raw []byte) ([]string, error) {
 	return out, nil
 }
 
+// deref follows YAML aliases (*name) to the anchored node, so a value
+// can't hide behind one.
+func deref(n *yaml.Node) *yaml.Node {
+	for i := 0; n.Kind == yaml.AliasNode && n.Alias != nil && i < 100; i++ {
+		n = n.Alias
+	}
+	return n
+}
+
 func job(n *yaml.Node) []string {
+	return jobDepth(n, 0)
+}
+
+func jobDepth(n *yaml.Node, depth int) []string {
 	var out []string
-	if n.Kind != yaml.MappingNode {
+	n = deref(n)
+	if n.Kind != yaml.MappingNode || depth > 20 {
 		return nil
 	}
 	for i := 0; i+1 < len(n.Content); i += 2 {
-		val := n.Content[i+1]
+		val := deref(n.Content[i+1])
 		switch n.Content[i].Value {
+		case "<<":
+			// Merge keys: <<: *template or <<: [*a, *b].
+			if val.Kind == yaml.SequenceNode {
+				for _, m := range val.Content {
+					out = append(out, jobDepth(m, depth+1)...)
+				}
+			} else {
+				out = append(out, jobDepth(val, depth+1)...)
+			}
 		case "image":
 			out = append(out, images(val)...)
 		case "services":
@@ -121,6 +144,7 @@ func job(n *yaml.Node) []string {
 // images reads image: NAME or image: {name: NAME}. An !reference to another
 // job's image is that job's, recorded there.
 func images(n *yaml.Node) []string {
+	n = deref(n)
 	switch {
 	case n.Tag == "!reference":
 		return nil
@@ -130,11 +154,14 @@ func images(n *yaml.Node) []string {
 		if name := mapValue(n, "name"); name != nil && name.Kind == yaml.ScalarNode {
 			return []string{"docker://" + name.Value}
 		}
+		// Anything else in name: is something GitLab can't pull either way.
+		return []string{"docker://<unreadable image at line " + fmt.Sprint(n.Line) + ">"}
 	}
 	return nil
 }
 
 func services(n *yaml.Node) []string {
+	n = deref(n)
 	if n.Kind != yaml.SequenceNode || n.Tag == "!reference" {
 		return nil
 	}
@@ -148,6 +175,7 @@ func services(n *yaml.Node) []string {
 // includes reads include: in each of its forms: a string, a mapping, or a
 // list of either.
 func includes(n *yaml.Node) ([]string, error) {
+	n = deref(n)
 	switch n.Kind {
 	case yaml.ScalarNode:
 		// A bare string is a local path, or a remote URL.
@@ -210,9 +238,10 @@ func includes(n *yaml.Node) ([]string, error) {
 }
 
 func mapValue(n *yaml.Node, key string) *yaml.Node {
+	n = deref(n)
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		if n.Content[i].Value == key {
-			return n.Content[i+1]
+			return deref(n.Content[i+1])
 		}
 	}
 	return nil

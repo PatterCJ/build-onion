@@ -113,3 +113,44 @@ func TestReferencesErrors(t *testing.T) {
 		}
 	}
 }
+
+// An unpinned image can't hide behind a YAML alias or merge key.
+func TestReferencesThroughAliases(t *testing.T) {
+	body := `
+.defs:
+  img: &img alpine:3
+  svc: &svc [docker:dind]
+  tmpl: &tmpl
+    image: busybox:latest
+.inc: &inc {template: Jobs/SAST.gitlab-ci.yml}
+include: [*inc]
+build:
+  image: *img
+  services: *svc
+  script: [true]
+other:
+  <<: *tmpl
+  script: [true]
+both:
+  <<: [*tmpl]
+  script: [true]
+`
+	got, err := References([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"template:Jobs/SAST.gitlab-ci.yml", "docker://alpine:3", "docker://docker:dind", "docker://busybox:latest"} {
+		found := false
+		for _, g := range got {
+			found = found || g == want
+		}
+		if !found {
+			t.Errorf("%s hidden: got %q", want, got)
+		}
+	}
+	for _, r := range got {
+		if Pinned(r) {
+			t.Errorf("%s counted as pinned", r)
+		}
+	}
+}
