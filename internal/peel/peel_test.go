@@ -723,3 +723,45 @@ func TestTrustedAppSigner(t *testing.T) {
 		}
 	}
 }
+
+// A reproducible build seals the same digest in more than one run (a release
+// and a re-release from another commit). peel checks the run that matches
+// the claim, whatever order the bundles arrive in, and never mixes runs.
+func TestChoosesSealingRun(t *testing.T) {
+	const otherRun = "https://github.com/acme/widget/actions/runs/999999999/attempts/1"
+	build := func(otherFirst bool, claim string) Input {
+		w := newWorld()
+		in := w.input(t)
+		fv := in.Verifier.(fakeVerifier)
+		var other []attest.Candidate
+		for _, c := range in.Candidates {
+			v := *fv[c.Source]
+			v.Certificate.SourceRepositoryDigest = strings.Repeat("9", 40)
+			v.Certificate.RunInvocationURI = otherRun
+			fv["other "+c.Source] = &v
+			other = append(other, attest.Candidate{Source: "other " + c.Source})
+		}
+		if otherFirst {
+			in.Candidates = append(other, in.Candidates...)
+		} else {
+			in.Candidates = append(in.Candidates, other...)
+		}
+		in.Claim.Commit = claim
+		return in
+	}
+	for _, otherFirst := range []bool{true, false} {
+		r := Run(build(otherFirst, commit))
+		if r.Verdict != Passed {
+			t.Fatalf("otherFirst=%v: claimed commit's run not chosen: %s\n%s", otherFirst, r.Verdict, lines(r))
+		}
+		if !strings.Contains(lines(r), "NOTE seal/other sealing runs: this digest was also sealed by 1 other run(s), not used: "+otherRun) {
+			t.Errorf("other run not noted:\n%s", lines(r))
+		}
+	}
+	// With no claimed commit, the newest run is checked, and its layers aren't
+	// mixed with the older run's.
+	r := Run(build(false, ""))
+	if !strings.Contains(lines(r), "PASSED seal/one run signed every layer: run "+otherRun) {
+		t.Errorf("newest run not chosen, or runs mixed:\n%s", lines(r))
+	}
+}
